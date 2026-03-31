@@ -169,13 +169,13 @@ The following is the expected stack. Deviations are acceptable if you document t
 
 | Layer | Expected |
 |---|---|
-| Runtime | Node.js 20+ |
-| Framework | NestJS |
-| Messaging | Kafka (local via Docker, or Confluent Cloud) |
+| Runtime | [Node.js 20+](https://nodejs.org/docs/latest/api/) |
+| Framework | [NestJS](https://docs.nestjs.com/) |
+| Messaging | [Kafka](https://kafka.apache.org/42/getting-started/introduction/) (local via Docker, or Confluent Cloud) |
 | Database | Your choice — document why |
 | Orchestration | Temporal, native Kafka, or a state machine — justify the choice |
-| Language | TypeScript (strict mode) |
-| Containers | Docker Compose for local environment |
+| Language | [TypeScript](https://www.typescriptlang.org/docs/) (strict mode) |
+| Containers | [Docker Compose](https://docs.docker.com/compose/) for local environment |
 
 ---
 
