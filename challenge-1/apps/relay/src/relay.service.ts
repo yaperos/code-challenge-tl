@@ -59,4 +59,8 @@ export class RelayService implements OnApplicationBootstrap {
       }
     }
   }
+
+  getHello(): string {
+    return 'Outbox Relay Service is running.';
+  }
 }

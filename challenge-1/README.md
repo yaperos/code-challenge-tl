@@ -64,93 +64,77 @@ npm install
 
 ## Cómo probar y validar cada escenario paso a paso
 
-### 1. Crear un Pago (Trigger del Pipeline)
-Una vez que hayas levantado los 3 microservicios (`api`, `relay`, `consumers`), interactúa con el API REST para iniciar el flujo. Reemplaza este comando en una terminal:
+### 1. Preparar el Entorno y Levantar Microservicios
+Antes de realizar pruebas, asegúrate de tener la infraestructura (Docker) y los 3 microservicios corriendo en terminales separadas para observar el flujo en tiempo real.
+
+**Paso A: Infraestructura (Terminal 1)**
 ```bash
-curl -X POST http://localhost:3000/payments -H "Content-Type: application/json" -d "{\"amount\": 1500, \"currency\": \"USD\", \"country\": \"PE\"}"
-```
-**Resultado esperado:**
-```json
-{
-  "id": "651ba78b-cee5-4f2a-91dd-6d4db19a7848",
-  "amount": 1500,
-  "currency": "USD",
-  "country": "PE",
-  "status": "PENDING",
-  "createdAt": "2026-04-01T20:41:24.450Z",
-  "updatedAt": "2026-04-01T20:41:24.450Z"
-}
-```
-Esto creará el registro con estado `PENDING` e insertará en la tabla transaccional `outbox_events`. Copia el **ID** de respuesta para los siguientes pasos.
-
-### 2. Verificar el proceso Relay -> Kafka -> Consumers
-Observa los logs en la terminal de cada microservicio:
-1. **Relay (`npm run start relay`)**: Mostrará `[RelayService] Relayed event <id> successfully` al extraer de base de datos y publicar a Kafka.
-2. **Consumers (`npm run start consumers`)**: El `DispatcherController` atrape el mensaje y coordina a los evaluadores:
-**Resultado esperado (Terminal Consumers):**
-```text
-[DispatcherController] Payment created event received by Dispatcher
-[FraudConsumer] Processing fraud scoring for payment 651ba78b...
-[LedgerConsumer] Processing ledger entry for payment 651ba78b...
-[FraudConsumer] Fraud scoring passed for payment 651ba78b...
-[LedgerConsumer] Ledger entry written for payment 651ba78b...
-[SagaConsumer] Both consumers processed for 651ba78b... Settling payment.
+docker-compose up -d
 ```
 
-### 3. GET Endpoint (Validación de API Consistencia Eventual)
-Verifica que el estado convergente pasó de `PENDING` a `SETTLED` haciendo fetch del endpoint con tu ID:
+**Paso B: Levantar Microservicios (Terminales 2, 3 y 4)**
+Se recomienda iniciar los 3 procesos **antes** de enviar la petición para observar el procesamiento asíncrono inmediato:
+- **API:** `npm run start api` (Puerto 3001)
+- **Relay:** `npm run start relay` (Escanea Outbox cada 10s)
+- **Consumers:** `npm run start consumers` (Escucha Kafka)
+
+---
+
+### 2. Crear un Pago y Verificar Outbox (Garantía Atómica)
+Envía un pago a la API. En este punto, la API guarda el Pago y el Evento en una misma transacción de BD.
+
+**Ejecutar Petición:**
 ```bash
-curl -X GET http://localhost:3000/payments/{TU-PAYMENT-ID}
-```
-**Resultado esperado:**
-```json
-{
-  "data": {
-    "paymentId": "651ba78b-cee5-4f2a-91dd-6d4db19a7848",
-    "status": "SETTLED",
-    "amount": "1500.00",
-    "currency": "USD"
-  },
-  "meta": {
-    "consistencyModel": "eventual",
-    "note": "Status may be pending while downstream consumers are processing."
-  }
-}
+curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 1500, \"currency\": \"USD\", \"country\": \"PE\"}"
 ```
 
-### 4. Direct Database Validation (Verificación Integridad)
-Puedes verificar directamente en tu GUI de BD si los *Idempotent Consumers* garantizaron la transacción "Exactly-once" a nivel conceptual:
-```sql
-SELECT * FROM payment;
-```
-**Resultado esperado:** Tu pago deberá tener status `SETTLED`.
-
-```sql
-SELECT * FROM processed_events WHERE "aggregateId" = '{TU-PAYMENT-ID}';
-```
-**Resultado esperado:** Deberás tener 2 filas registradas (una para `FraudConsumer` y otra para `LedgerConsumer`), indicando que sus operaciones fueron exitosas y previene duplicidad de procesamiento en reintentos.
-
-### 5. Escenario Negativo / Fallido
-Para probar la rama condicional de la DLT (Dead Letter Queue), envía un pago declarando un *Amount inmenso* (regla de oro del código base para gatillar fraude intencional):
+**Validar Inserción en Outbox:**
+Para comprobar que el registro se creó con estado `PENDING` antes de ser procesado por el Relay, ejecuta:
 ```bash
-curl -X POST http://localhost:3000/payments -H "Content-Type: application/json" -d "{\"amount\": 1500000, \"currency\": \"USD\", \"country\": \"PE\"}"
+docker exec -it challenge_db psql -U user -d payments_db -c "SELECT \"eventId\", \"aggregateId\", status, \"eventType\" FROM outbox_events;"
 ```
-**Resultado esperado (Logs):**
-En consola el consumer fallará y observarás `[FraudConsumer] Sending to DLT -> payment.created.v1.dlt`. 
+*Si el Relay ya lo procesó, verás el estado como `SENT`.*
 
-Si procedes a pedir el estatus del pago vía HTTP o SQL:
+---
+
+### 3. Verificar el flujo Relay -> Kafka -> Consumers
+Observa los logs en las terminales donde levantaste los servicios en el Paso 1:
+
+1. **Relay Terminal**: Verás `[RelayService] Relayed event <id> successfully` indicando que el registro cambió a `SENT` y se publicó en Kafka.
+2. **Consumers Terminal**: El `DispatcherController` recibirá el mensaje y verás la coordinación de la Saga:
+   - `[FraudConsumer] Fraud scoring passed...`
+   - `[LedgerConsumer] Ledger entry written...`
+   - `[SagaConsumer] Both consumers processed... Settling payment.`
+
+---
+
+### 4. Validación de Consistencia Eventual (API y DB)
+
+**Consultar Estado Final vía API:**
 ```bash
-curl -X GET http://localhost:3000/payments/{RIESGO-PAYMENT-ID}
+curl -X GET http://localhost:3001/payments/{TU-PAYMENT-ID}
 ```
-**Resultado esperado:**
-```json
-{
-  "data": {
-    "paymentId": "772aa89c-a1b2-4c3d-...",
-    "status": "FAILED",
-    "amount": "1500000.00",
-    "currency": "USD"
-  },
-  ...
-}
+**Resultado esperado:** `"status": "SETTLED"`.
+
+**Verificar Idempotencia en DB:**
+Comprueba que los consumidores marcaron el evento como procesado para evitar duplicados. Dado que `processed_events` usa el `eventId`, vinculamos con `outbox_events` para filtrar por tu ID de pago:
+```bash
+docker exec -it challenge_db psql -U user -d payments_db -c "SELECT pe.* FROM processed_events pe JOIN outbox_events oe ON pe.\"eventId\" = oe.\"eventId\" WHERE oe.\"aggregateId\" = '{TU-PAYMENT-ID}';"
 ```
+
+---
+
+### 5. Escenario Negativo (DLT y Reintentos)
+Para forzar un fallo de fraude y ver el flujo hacia la **Dead Letter Queue (DLT)**, envía un pago con un monto mayor a 1,000,000:
+
+```bash
+curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 1500000, \"currency\": \"USD\", \"country\": \"PE\"}"
+```
+**Resultado esperado en Logs:**
+Observarás `[FraudConsumer] Sending to DLT -> payment.created.v1.dlt` y eventualmente el estado del pago cambiará a `FAILED`.
+
+**Validar Estado en DB:**
+```bash
+docker exec -it challenge_db psql -U user -d payments_db -c "SELECT id, status, amount FROM payments WHERE id = '{TU-PAYMENT-ID}';"
+```
+

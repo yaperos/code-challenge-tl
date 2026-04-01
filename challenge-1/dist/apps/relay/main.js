@@ -134,6 +134,9 @@ let RelayService = RelayService_1 = class RelayService {
             }
         }
     }
+    getHello() {
+        return 'Outbox Relay Service is running.';
+    }
 };
 exports.RelayService = RelayService;
 __decorate([
