@@ -59,3 +59,98 @@ npm install
 - Por motivos prácticos, todo el Monorepo asume una conexión genérica a la BD. En producción, el Relay y los Consumers utilizarían credenciales restrictivas.
 - Para Namespace País (opcional check): No se implementó un enrutamiento en sub-Kafka. De implementarlo, sería mediante `topic: pe.payments.payment...` inyectando dependencias configurables bajo módulo por entorno. 
 - Dead Letter Queue (`DLT`) y Retry Policies: El relay reintenta sin fin. Si los consumidores fallan (Simulado con `amount > 1000000`), el `FraudConsumer` invoca `sendToDlt` y deriva al subtopic `.dlt`, a su vez enviando `payment.failed.v1` donde la Saga finalmente declara status `FAILED` en la tabla para reflejarse vía API `GET /payments/:id`.
+
+---
+
+## Cómo probar y validar cada escenario paso a paso
+
+### 1. Crear un Pago (Trigger del Pipeline)
+Una vez que hayas levantado los 3 microservicios (`api`, `relay`, `consumers`), interactúa con el API REST para iniciar el flujo. Reemplaza este comando en una terminal:
+```bash
+curl -X POST http://localhost:3000/payments -H "Content-Type: application/json" -d "{\"amount\": 1500, \"currency\": \"USD\", \"country\": \"PE\"}"
+```
+**Resultado esperado:**
+```json
+{
+  "id": "651ba78b-cee5-4f2a-91dd-6d4db19a7848",
+  "amount": 1500,
+  "currency": "USD",
+  "country": "PE",
+  "status": "PENDING",
+  "createdAt": "2026-04-01T20:41:24.450Z",
+  "updatedAt": "2026-04-01T20:41:24.450Z"
+}
+```
+Esto creará el registro con estado `PENDING` e insertará en la tabla transaccional `outbox_events`. Copia el **ID** de respuesta para los siguientes pasos.
+
+### 2. Verificar el proceso Relay -> Kafka -> Consumers
+Observa los logs en la terminal de cada microservicio:
+1. **Relay (`npm run start relay`)**: Mostrará `[RelayService] Relayed event <id> successfully` al extraer de base de datos y publicar a Kafka.
+2. **Consumers (`npm run start consumers`)**: El `DispatcherController` atrape el mensaje y coordina a los evaluadores:
+**Resultado esperado (Terminal Consumers):**
+```text
+[DispatcherController] Payment created event received by Dispatcher
+[FraudConsumer] Processing fraud scoring for payment 651ba78b...
+[LedgerConsumer] Processing ledger entry for payment 651ba78b...
+[FraudConsumer] Fraud scoring passed for payment 651ba78b...
+[LedgerConsumer] Ledger entry written for payment 651ba78b...
+[SagaConsumer] Both consumers processed for 651ba78b... Settling payment.
+```
+
+### 3. GET Endpoint (Validación de API Consistencia Eventual)
+Verifica que el estado convergente pasó de `PENDING` a `SETTLED` haciendo fetch del endpoint con tu ID:
+```bash
+curl -X GET http://localhost:3000/payments/{TU-PAYMENT-ID}
+```
+**Resultado esperado:**
+```json
+{
+  "data": {
+    "paymentId": "651ba78b-cee5-4f2a-91dd-6d4db19a7848",
+    "status": "SETTLED",
+    "amount": "1500.00",
+    "currency": "USD"
+  },
+  "meta": {
+    "consistencyModel": "eventual",
+    "note": "Status may be pending while downstream consumers are processing."
+  }
+}
+```
+
+### 4. Direct Database Validation (Verificación Integridad)
+Puedes verificar directamente en tu GUI de BD si los *Idempotent Consumers* garantizaron la transacción "Exactly-once" a nivel conceptual:
+```sql
+SELECT * FROM payment;
+```
+**Resultado esperado:** Tu pago deberá tener status `SETTLED`.
+
+```sql
+SELECT * FROM processed_events WHERE "aggregateId" = '{TU-PAYMENT-ID}';
+```
+**Resultado esperado:** Deberás tener 2 filas registradas (una para `FraudConsumer` y otra para `LedgerConsumer`), indicando que sus operaciones fueron exitosas y previene duplicidad de procesamiento en reintentos.
+
+### 5. Escenario Negativo / Fallido
+Para probar la rama condicional de la DLT (Dead Letter Queue), envía un pago declarando un *Amount inmenso* (regla de oro del código base para gatillar fraude intencional):
+```bash
+curl -X POST http://localhost:3000/payments -H "Content-Type: application/json" -d "{\"amount\": 1500000, \"currency\": \"USD\", \"country\": \"PE\"}"
+```
+**Resultado esperado (Logs):**
+En consola el consumer fallará y observarás `[FraudConsumer] Sending to DLT -> payment.created.v1.dlt`. 
+
+Si procedes a pedir el estatus del pago vía HTTP o SQL:
+```bash
+curl -X GET http://localhost:3000/payments/{RIESGO-PAYMENT-ID}
+```
+**Resultado esperado:**
+```json
+{
+  "data": {
+    "paymentId": "772aa89c-a1b2-4c3d-...",
+    "status": "FAILED",
+    "amount": "1500000.00",
+    "currency": "USD"
+  },
+  ...
+}
+```

@@ -23,10 +23,11 @@ exports.ConsumersModule = void 0;
 const common_1 = __webpack_require__(3);
 const microservices_1 = __webpack_require__(4);
 const shared_1 = __webpack_require__(5);
-const fraud_consumer_1 = __webpack_require__(16);
-const ledger_consumer_1 = __webpack_require__(18);
-const saga_consumer_1 = __webpack_require__(19);
-const processed_events_repository_1 = __webpack_require__(17);
+const dispatcher_controller_1 = __webpack_require__(16);
+const fraud_consumer_1 = __webpack_require__(17);
+const ledger_consumer_1 = __webpack_require__(19);
+const saga_consumer_1 = __webpack_require__(20);
+const processed_events_repository_1 = __webpack_require__(18);
 let ConsumersModule = class ConsumersModule {
 };
 exports.ConsumersModule = ConsumersModule;
@@ -50,10 +51,13 @@ exports.ConsumersModule = ConsumersModule = __decorate([
                 },
             ]),
         ],
+        controllers: [
+            dispatcher_controller_1.DispatcherController,
+            saga_consumer_1.SagaConsumer,
+        ],
         providers: [
             fraud_consumer_1.FraudConsumer,
             ledger_consumer_1.LedgerConsumer,
-            saga_consumer_1.SagaConsumer,
             processed_events_repository_1.ProcessedEventsRepository
         ],
     })
@@ -454,13 +458,71 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
+var DispatcherController_1;
+var _a, _b, _c;
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DispatcherController = void 0;
+const common_1 = __webpack_require__(3);
+const microservices_1 = __webpack_require__(4);
+const fraud_consumer_1 = __webpack_require__(17);
+const ledger_consumer_1 = __webpack_require__(19);
+let DispatcherController = DispatcherController_1 = class DispatcherController {
+    fraud;
+    ledger;
+    logger = new common_1.Logger(DispatcherController_1.name);
+    constructor(fraud, ledger) {
+        this.fraud = fraud;
+        this.ledger = ledger;
+    }
+    async handlePaymentCreated(message, context) {
+        this.logger.log('Payment created event received by Dispatcher');
+        Promise.allSettled([
+            this.fraud.handlePaymentCreated(message, context),
+            this.ledger.handlePaymentCreated(message, context),
+        ]).then(() => {
+            this.logger.log('Fraud and Ledger evaluations initiated');
+        });
+    }
+};
+exports.DispatcherController = DispatcherController;
+__decorate([
+    (0, microservices_1.EventPattern)('payment.created.v1'),
+    __param(0, (0, microservices_1.Payload)()),
+    __param(1, (0, microservices_1.Ctx)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, typeof (_c = typeof microservices_1.KafkaContext !== "undefined" && microservices_1.KafkaContext) === "function" ? _c : Object]),
+    __metadata("design:returntype", Promise)
+], DispatcherController.prototype, "handlePaymentCreated", null);
+exports.DispatcherController = DispatcherController = DispatcherController_1 = __decorate([
+    (0, common_1.Controller)(),
+    __metadata("design:paramtypes", [typeof (_a = typeof fraud_consumer_1.FraudConsumer !== "undefined" && fraud_consumer_1.FraudConsumer) === "function" ? _a : Object, typeof (_b = typeof ledger_consumer_1.LedgerConsumer !== "undefined" && ledger_consumer_1.LedgerConsumer) === "function" ? _b : Object])
+], DispatcherController);
+
+
+/***/ }),
+/* 17 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
+    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
+    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
+    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    return c > 3 && r && Object.defineProperty(target, key, r), r;
+};
+var __metadata = (this && this.__metadata) || function (k, v) {
+    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+};
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var FraudConsumer_1;
-var _a, _b, _c, _d;
+var _a, _b;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FraudConsumer = void 0;
 const common_1 = __webpack_require__(3);
 const microservices_1 = __webpack_require__(4);
-const processed_events_repository_1 = __webpack_require__(17);
+const processed_events_repository_1 = __webpack_require__(18);
 let FraudConsumer = FraudConsumer_1 = class FraudConsumer {
     processedRepo;
     kafkaClient;
@@ -521,23 +583,15 @@ let FraudConsumer = FraudConsumer_1 = class FraudConsumer {
     }
 };
 exports.FraudConsumer = FraudConsumer;
-__decorate([
-    (0, microservices_1.EventPattern)('payment.created.v1'),
-    __param(0, (0, microservices_1.Payload)()),
-    __param(1, (0, microservices_1.Ctx)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, typeof (_c = typeof microservices_1.KafkaContext !== "undefined" && microservices_1.KafkaContext) === "function" ? _c : Object]),
-    __metadata("design:returntype", typeof (_d = typeof Promise !== "undefined" && Promise) === "function" ? _d : Object)
-], FraudConsumer.prototype, "handlePaymentCreated", null);
 exports.FraudConsumer = FraudConsumer = FraudConsumer_1 = __decorate([
-    (0, common_1.Controller)(),
+    (0, common_1.Injectable)(),
     __param(1, (0, common_1.Inject)('KAFKA_CLIENT')),
     __metadata("design:paramtypes", [typeof (_a = typeof processed_events_repository_1.ProcessedEventsRepository !== "undefined" && processed_events_repository_1.ProcessedEventsRepository) === "function" ? _a : Object, typeof (_b = typeof microservices_1.ClientKafka !== "undefined" && microservices_1.ClientKafka) === "function" ? _b : Object])
 ], FraudConsumer);
 
 
 /***/ }),
-/* 17 */
+/* 18 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -583,7 +637,7 @@ exports.ProcessedEventsRepository = ProcessedEventsRepository = __decorate([
 
 
 /***/ }),
-/* 18 */
+/* 19 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -600,12 +654,12 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 var LedgerConsumer_1;
-var _a, _b, _c, _d;
+var _a, _b;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.LedgerConsumer = void 0;
 const common_1 = __webpack_require__(3);
 const microservices_1 = __webpack_require__(4);
-const processed_events_repository_1 = __webpack_require__(17);
+const processed_events_repository_1 = __webpack_require__(18);
 let LedgerConsumer = LedgerConsumer_1 = class LedgerConsumer {
     processedRepo;
     kafkaClient;
@@ -662,23 +716,15 @@ let LedgerConsumer = LedgerConsumer_1 = class LedgerConsumer {
     }
 };
 exports.LedgerConsumer = LedgerConsumer;
-__decorate([
-    (0, microservices_1.EventPattern)('payment.created.v1'),
-    __param(0, (0, microservices_1.Payload)()),
-    __param(1, (0, microservices_1.Ctx)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, typeof (_c = typeof microservices_1.KafkaContext !== "undefined" && microservices_1.KafkaContext) === "function" ? _c : Object]),
-    __metadata("design:returntype", typeof (_d = typeof Promise !== "undefined" && Promise) === "function" ? _d : Object)
-], LedgerConsumer.prototype, "handlePaymentCreated", null);
 exports.LedgerConsumer = LedgerConsumer = LedgerConsumer_1 = __decorate([
-    (0, common_1.Controller)(),
+    (0, common_1.Injectable)(),
     __param(1, (0, common_1.Inject)('KAFKA_CLIENT')),
     __metadata("design:paramtypes", [typeof (_a = typeof processed_events_repository_1.ProcessedEventsRepository !== "undefined" && processed_events_repository_1.ProcessedEventsRepository) === "function" ? _a : Object, typeof (_b = typeof microservices_1.ClientKafka !== "undefined" && microservices_1.ClientKafka) === "function" ? _b : Object])
 ], LedgerConsumer);
 
 
 /***/ }),
-/* 19 */
+/* 20 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -701,7 +747,7 @@ exports.SagaConsumer = void 0;
 const common_1 = __webpack_require__(3);
 const microservices_1 = __webpack_require__(4);
 const typeorm_1 = __webpack_require__(9);
-const processed_events_repository_1 = __webpack_require__(17);
+const processed_events_repository_1 = __webpack_require__(18);
 const shared_1 = __webpack_require__(5);
 let SagaConsumer = SagaConsumer_1 = class SagaConsumer {
     dataSource;

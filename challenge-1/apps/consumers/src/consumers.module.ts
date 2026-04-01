@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { DatabaseModule } from '@app/shared';
+import { DispatcherController } from './dispatcher.controller';
 import { FraudConsumer } from './fraud.consumer';
 import { LedgerConsumer } from './ledger.consumer';
 import { SagaConsumer } from './saga.consumer';
@@ -25,10 +26,13 @@ import { ProcessedEventsRepository } from './processed-events.repository';
       },
     ]),
   ],
+  controllers: [
+    DispatcherController,
+    SagaConsumer,
+  ],
   providers: [
     FraudConsumer, 
     LedgerConsumer, 
-    SagaConsumer, 
     ProcessedEventsRepository
   ],
 })

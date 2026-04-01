@@ -1,8 +1,8 @@
-import { Controller, Logger, Inject } from '@nestjs/common';
-import { EventPattern, Payload, ClientKafka, KafkaContext, Ctx } from '@nestjs/microservices';
+import { Injectable, Logger, Inject } from '@nestjs/common';
+import { ClientKafka, KafkaContext } from '@nestjs/microservices';
 import { ProcessedEventsRepository } from './processed-events.repository';
 
-@Controller()
+@Injectable()
 export class LedgerConsumer {
   private readonly logger = new Logger(LedgerConsumer.name);
   private readonly consumerName = 'LedgerConsumer';
@@ -12,8 +12,7 @@ export class LedgerConsumer {
     @Inject('KAFKA_CLIENT') private readonly kafkaClient: ClientKafka,
   ) {}
 
-  @EventPattern('payment.created.v1')
-  async handlePaymentCreated(@Payload() message: any, @Ctx() context: KafkaContext): Promise<void> {
+  async handlePaymentCreated(message: any, context: KafkaContext): Promise<void> {
     const value = message;
     const eventId = value.eventId || context.getMessage().key?.toString();
     const aggregateId = value.aggregateId || value.id;
