@@ -278,12 +278,17 @@ Como ahora usamos nombres de tópico por país, **ejecuto** estos comandos para 
 docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
 ```
 
-**2. Ver contenido de un tópico (ej. Perú):**
+**2. Listar solo tópicos de Perú (PE):**
+```bash
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list | grep pe.
+```
+
+**3. Ver contenido de un tópico (ej. Perú):**
 ```bash
 docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic pe.payment.created.v1 --from-beginning
 ```
 
-**3. Ver la "Cola de Errores" (DLT) de México:**
+**4. Ver la "Cola de Errores" (DLT) de México:**
 ```bash
 docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic mx.payment.created.v1.dlt --from-beginning
 ```
