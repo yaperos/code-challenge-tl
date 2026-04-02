@@ -12,7 +12,12 @@ export class DispatcherController {
     private readonly ledger: LedgerConsumer,
   ) {}
 
-  @EventPattern('payment.created.v1')
+  @EventPattern([
+    'pe.payment.created.v1',
+    'mx.payment.created.v1',
+    'co.payment.created.v1',
+    'gen.payment.created.v1'
+  ])
   async handlePaymentCreated(@Payload() message: any, @Ctx() context: KafkaContext) {
     this.logger.log('Payment created event received by Dispatcher');
     // Run both checks concurrently

@@ -113,8 +113,11 @@ let RelayService = RelayService_1 = class RelayService {
         this.logger.log(`Found ${events.length} pending events to relay`);
         for (const event of events) {
             try {
+                const countryPrefix = (event.payload?.country || 'gen').toLowerCase();
+                const topic = `${countryPrefix}.${event.eventType}`;
+                this.logger.log(`Publishing to namespaced topic: ${topic}`);
                 await new Promise((resolve, reject) => {
-                    this.kafkaClient.emit(event.eventType, {
+                    this.kafkaClient.emit(topic, {
                         key: event.aggregateId,
                         value: event.payload
                     }).subscribe({

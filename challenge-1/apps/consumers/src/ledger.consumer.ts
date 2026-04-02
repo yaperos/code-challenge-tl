@@ -38,21 +38,26 @@ export class LedgerConsumer {
       
       this.logger.log(`Ledger entry written for payment ${aggregateId}`);
       
+      const countryPrefix = (value.country || 'gen').toLowerCase();
+
       // Emit success for this stage
-      this.kafkaClient.emit('payment.ledger.written.v1', {
+      this.kafkaClient.emit(`${countryPrefix}.payment.ledger.written.v1`, {
         key: aggregateId,
         value: { aggregateId, eventId, status: 'WRITTEN' },
       });
 
     } catch (error) {
        this.logger.error(`Error processing ${eventId} in Ledger: ${error.message}`);
-       await this.sendToDlt('payment.created.v1', value, error);
+       
+       const countryPrefix = (value.country || 'gen').toLowerCase();
+       await this.sendToDlt(`${countryPrefix}.payment.created.v1`, value, error);
     }
   }
 
   private async sendToDlt(originalTopic: string, message: any, error: Error) {
     const dltTopic = `${originalTopic}.dlt`;
     const aggregateId = message.aggregateId || message.id;
+    const countryPrefix = (message.country || 'gen').toLowerCase();
 
     this.logger.warn(`Sending to DLT -> ${dltTopic}`);
     this.kafkaClient.emit(dltTopic, {
@@ -65,7 +70,7 @@ export class LedgerConsumer {
       },
     });
 
-    this.kafkaClient.emit('payment.failed.v1', {
+    this.kafkaClient.emit(`${countryPrefix}.payment.failed.v1`, {
       key: aggregateId,
       value: { aggregateId, reason: error.message },
     });

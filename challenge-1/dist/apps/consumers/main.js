@@ -486,7 +486,12 @@ let DispatcherController = DispatcherController_1 = class DispatcherController {
 };
 exports.DispatcherController = DispatcherController;
 __decorate([
-    (0, microservices_1.EventPattern)('payment.created.v1'),
+    (0, microservices_1.EventPattern)([
+        'pe.payment.created.v1',
+        'mx.payment.created.v1',
+        'co.payment.created.v1',
+        'gen.payment.created.v1'
+    ]),
     __param(0, (0, microservices_1.Payload)()),
     __param(1, (0, microservices_1.Ctx)()),
     __metadata("design:type", Function),
@@ -553,19 +558,22 @@ let FraudConsumer = FraudConsumer_1 = class FraudConsumer {
             }
             await this.processedRepo.markProcessed(eventId, this.consumerName);
             this.logger.log(`Fraud scoring passed for payment ${aggregateId}`);
-            this.kafkaClient.emit('payment.fraud.approved.v1', {
+            const countryPrefix = (value.country || 'gen').toLowerCase();
+            this.kafkaClient.emit(`${countryPrefix}.payment.fraud.approved.v1`, {
                 key: aggregateId,
                 value: { aggregateId, eventId, status: 'APPROVED' },
             });
         }
         catch (error) {
             this.logger.error(`Error processing ${eventId} in Fraud: ${error.message}`);
-            await this.sendToDlt('payment.created.v1', value, error);
+            const countryPrefix = (value.country || 'gen').toLowerCase();
+            await this.sendToDlt(`${countryPrefix}.payment.created.v1`, value, error);
         }
     }
     async sendToDlt(originalTopic, message, error) {
         const dltTopic = `${originalTopic}.dlt`;
         const aggregateId = message.aggregateId || message.id;
+        const countryPrefix = (message.country || 'gen').toLowerCase();
         this.logger.warn(`Sending to DLT -> ${dltTopic}`);
         this.kafkaClient.emit(dltTopic, {
             key: aggregateId,
@@ -576,7 +584,7 @@ let FraudConsumer = FraudConsumer_1 = class FraudConsumer {
                 failedAt: new Date().toISOString(),
             },
         });
-        this.kafkaClient.emit('payment.failed.v1', {
+        this.kafkaClient.emit(`${countryPrefix}.payment.failed.v1`, {
             key: aggregateId,
             value: { aggregateId, reason: error.message },
         });
@@ -686,19 +694,22 @@ let LedgerConsumer = LedgerConsumer_1 = class LedgerConsumer {
             this.logger.log(`Processing ledger entry (double-entry write) for payment ${aggregateId}`);
             await this.processedRepo.markProcessed(eventId, this.consumerName);
             this.logger.log(`Ledger entry written for payment ${aggregateId}`);
-            this.kafkaClient.emit('payment.ledger.written.v1', {
+            const countryPrefix = (value.country || 'gen').toLowerCase();
+            this.kafkaClient.emit(`${countryPrefix}.payment.ledger.written.v1`, {
                 key: aggregateId,
                 value: { aggregateId, eventId, status: 'WRITTEN' },
             });
         }
         catch (error) {
             this.logger.error(`Error processing ${eventId} in Ledger: ${error.message}`);
-            await this.sendToDlt('payment.created.v1', value, error);
+            const countryPrefix = (value.country || 'gen').toLowerCase();
+            await this.sendToDlt(`${countryPrefix}.payment.created.v1`, value, error);
         }
     }
     async sendToDlt(originalTopic, message, error) {
         const dltTopic = `${originalTopic}.dlt`;
         const aggregateId = message.aggregateId || message.id;
+        const countryPrefix = (message.country || 'gen').toLowerCase();
         this.logger.warn(`Sending to DLT -> ${dltTopic}`);
         this.kafkaClient.emit(dltTopic, {
             key: aggregateId,
@@ -709,7 +720,7 @@ let LedgerConsumer = LedgerConsumer_1 = class LedgerConsumer {
                 failedAt: new Date().toISOString(),
             },
         });
-        this.kafkaClient.emit('payment.failed.v1', {
+        this.kafkaClient.emit(`${countryPrefix}.payment.failed.v1`, {
             key: aggregateId,
             value: { aggregateId, reason: error.message },
         });
@@ -758,10 +769,12 @@ let SagaConsumer = SagaConsumer_1 = class SagaConsumer {
         this.processedRepo = processedRepo;
     }
     async handleFraudApproved(message) {
-        await this.trySettlePayment(message.eventId, message.aggregateId);
+        const aggregateId = message.aggregateId || message.id;
+        await this.trySettlePayment(message.eventId, aggregateId);
     }
     async handleLedgerWritten(message) {
-        await this.trySettlePayment(message.eventId, message.aggregateId);
+        const aggregateId = message.aggregateId || message.id;
+        await this.trySettlePayment(message.eventId, aggregateId);
     }
     async handlePaymentFailed(message) {
         const aggregateId = message.aggregateId || message.id;
@@ -781,21 +794,36 @@ let SagaConsumer = SagaConsumer_1 = class SagaConsumer {
 };
 exports.SagaConsumer = SagaConsumer;
 __decorate([
-    (0, microservices_1.EventPattern)('payment.fraud.approved.v1'),
+    (0, microservices_1.EventPattern)([
+        'pe.payment.fraud.approved.v1',
+        'mx.payment.fraud.approved.v1',
+        'co.payment.fraud.approved.v1',
+        'gen.payment.fraud.approved.v1'
+    ]),
     __param(0, (0, microservices_1.Payload)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", typeof (_c = typeof Promise !== "undefined" && Promise) === "function" ? _c : Object)
 ], SagaConsumer.prototype, "handleFraudApproved", null);
 __decorate([
-    (0, microservices_1.EventPattern)('payment.ledger.written.v1'),
+    (0, microservices_1.EventPattern)([
+        'pe.payment.ledger.written.v1',
+        'mx.payment.ledger.written.v1',
+        'co.payment.ledger.written.v1',
+        'gen.payment.ledger.written.v1'
+    ]),
     __param(0, (0, microservices_1.Payload)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", typeof (_d = typeof Promise !== "undefined" && Promise) === "function" ? _d : Object)
 ], SagaConsumer.prototype, "handleLedgerWritten", null);
 __decorate([
-    (0, microservices_1.EventPattern)('payment.failed.v1'),
+    (0, microservices_1.EventPattern)([
+        'pe.payment.failed.v1',
+        'mx.payment.failed.v1',
+        'co.payment.failed.v1',
+        'gen.payment.failed.v1'
+    ]),
     __param(0, (0, microservices_1.Payload)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),

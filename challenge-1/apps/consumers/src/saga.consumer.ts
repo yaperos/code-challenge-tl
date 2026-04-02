@@ -13,17 +13,34 @@ export class SagaConsumer {
     private readonly processedRepo: ProcessedEventsRepository,
   ) {}
 
-  @EventPattern('payment.fraud.approved.v1')
+  @EventPattern([
+    'pe.payment.fraud.approved.v1',
+    'mx.payment.fraud.approved.v1',
+    'co.payment.fraud.approved.v1',
+    'gen.payment.fraud.approved.v1'
+  ])
   async handleFraudApproved(@Payload() message: any): Promise<void> {
-    await this.trySettlePayment(message.eventId, message.aggregateId);
+    const aggregateId = message.aggregateId || message.id;
+    await this.trySettlePayment(message.eventId, aggregateId);
   }
 
-  @EventPattern('payment.ledger.written.v1')
+  @EventPattern([
+    'pe.payment.ledger.written.v1',
+    'mx.payment.ledger.written.v1',
+    'co.payment.ledger.written.v1',
+    'gen.payment.ledger.written.v1'
+  ])
   async handleLedgerWritten(@Payload() message: any): Promise<void> {
-    await this.trySettlePayment(message.eventId, message.aggregateId);
+    const aggregateId = message.aggregateId || message.id;
+    await this.trySettlePayment(message.eventId, aggregateId);
   }
 
-  @EventPattern('payment.failed.v1')
+  @EventPattern([
+    'pe.payment.failed.v1',
+    'mx.payment.failed.v1',
+    'co.payment.failed.v1',
+    'gen.payment.failed.v1'
+  ])
   async handlePaymentFailed(@Payload() message: any): Promise<void> {
     const aggregateId = message.aggregateId || message.id;
     this.logger.warn(`Saga reacting to failure for payment ${aggregateId}`);

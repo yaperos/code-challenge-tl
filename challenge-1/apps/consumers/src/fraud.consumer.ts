@@ -43,8 +43,10 @@ export class FraudConsumer {
       
       this.logger.log(`Fraud scoring passed for payment ${aggregateId}`);
       
+      const countryPrefix = (value.country || 'gen').toLowerCase();
+
       // Emit success for this stage
-      this.kafkaClient.emit('payment.fraud.approved.v1', {
+      this.kafkaClient.emit(`${countryPrefix}.payment.fraud.approved.v1`, {
         key: aggregateId,
         value: { aggregateId, eventId, status: 'APPROVED' },
       });
@@ -52,17 +54,15 @@ export class FraudConsumer {
     } catch (error) {
        this.logger.error(`Error processing ${eventId} in Fraud: ${error.message}`);
        
-       // Note: Native Kafka retries might handle retries, but for DLT pattern we manage it:
-       // For a strict retry budget we could read headers or a local table. 
-       // Simplification: assume it failed permanently after standard catches, send to DLT.
-       
-       await this.sendToDlt('payment.created.v1', value, error);
+       const countryPrefix = (value.country || 'gen').toLowerCase();
+       await this.sendToDlt(`${countryPrefix}.payment.created.v1`, value, error);
     }
   }
 
   private async sendToDlt(originalTopic: string, message: any, error: Error) {
     const dltTopic = `${originalTopic}.dlt`;
     const aggregateId = message.aggregateId || message.id;
+    const countryPrefix = (message.country || 'gen').toLowerCase();
 
     this.logger.warn(`Sending to DLT -> ${dltTopic}`);
     this.kafkaClient.emit(dltTopic, {
@@ -75,7 +75,7 @@ export class FraudConsumer {
       },
     });
 
-    this.kafkaClient.emit('payment.failed.v1', {
+    this.kafkaClient.emit(`${countryPrefix}.payment.failed.v1`, {
       key: aggregateId,
       value: { aggregateId, reason: error.message },
     });
