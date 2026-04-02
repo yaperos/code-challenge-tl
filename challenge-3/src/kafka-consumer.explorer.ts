@@ -29,9 +29,12 @@ export class KafkaConsumerExplorer implements OnModuleInit, OnModuleDestroy {
     }
 
     const providers = this.discoveryService.getProviders();
+    const controllers = this.discoveryService.getControllers();
+    const allInstances = [...providers, ...controllers];
+
     const handlers: Array<{ topic: string; handler: Function; instance: unknown }> = [];
 
-    providers.forEach((wrapper) => {
+    allInstances.forEach((wrapper) => {
       const { instance } = wrapper;
       if (!instance || typeof instance !== 'object' || !Object.getPrototypeOf(instance)) {
         return;

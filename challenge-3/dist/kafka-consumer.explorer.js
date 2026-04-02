@@ -43,8 +43,10 @@ let KafkaConsumerExplorer = KafkaConsumerExplorer_1 = class KafkaConsumerExplore
             return;
         }
         const providers = this.discoveryService.getProviders();
+        const controllers = this.discoveryService.getControllers();
+        const allInstances = [...providers, ...controllers];
         const handlers = [];
-        providers.forEach((wrapper) => {
+        allInstances.forEach((wrapper) => {
             const { instance } = wrapper;
             if (!instance || typeof instance !== 'object' || !Object.getPrototypeOf(instance)) {
                 return;

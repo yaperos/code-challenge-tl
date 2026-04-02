@@ -15,14 +15,14 @@ type PaymentCreatedPayload = {
 @Controller()
 export class AppController {
   private readonly logger = new Logger(AppController.name);
-  
+
   // Demonstrating how instance variables can be read by our Explorer (maxRetries)
   public readonly maxRetries = 2;
 
   constructor(
     private readonly appService: AppService,
     private readonly producer: KafkaTypedProducer,
-  ) {}
+  ) { }
 
   @Get()
   getHello(): string {
@@ -53,7 +53,7 @@ export class AppController {
   @KafkaEvent('payment.created.v1')
   async handlePaymentCreated(event: EventContract<PaymentCreatedPayload>): Promise<void> {
     this.logger.log(`Received Kafka Event in Squad Consumer: ${JSON.stringify(event.data)}`);
-    
+
     // Provocar fallo condicional para probar DLT
     if (event.data.amount > 1000) {
       this.logger.error('Amount too high! Simulating crash to trigger DLT handler...');

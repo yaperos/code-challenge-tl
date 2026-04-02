@@ -295,3 +295,14 @@ docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --top
 
 ---
 
+## Cumplimiento de Entregables (Checklist)
+
+He diseñado la solución alineada con el 100% de los requerimientos técnicos:
+
+| Punto | Entregable Requerido | Estado | Ubicación / Implementación |
+| :--- | :--- | :---: | :--- |
+| **1** | **Transactional outbox** | ✅ | `apps/api/src/payments/payments.service.ts`. Escritura atómica garantizada usando `QueryRunner`. Relay asíncrono en `apps/relay`. |
+| **2** | **Consumidores idempotentes** | ✅ | `FraudConsumer` y `LedgerConsumer` en `apps/consumers`. Previenen reprocesamiento mediante la tabla DB `processed_events`. |
+| **3** | **Manejador de DLT** | ✅ | Los fallos (y límites de reintentos) se enrutan de forma segura a `{topico_dlt}` mediante llamadas `sendToDlt` implementadas en el módulo. |
+| **4** | **Endpoint de consulta** | ✅ | `GET /payments/:id` en el modulo API. Demuestra honestamente consistencia eventual (transiciona validando BD por `SagaConsumer`). |
+| **Opt** | **Namespaces geográficos** | ✅ | En el servicio se añade el prefijo `{country}.payment...` al Outbox. Obliga implícitamente a enrutar a flujos apartados (Consumer Groups). |

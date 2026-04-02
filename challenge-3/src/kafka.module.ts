@@ -16,6 +16,8 @@ export interface KafkaFeatureOptions {
   imports: [DiscoveryModule],
 })
 export class KafkaModule {
+  constructor(private readonly explorer: KafkaConsumerExplorer) {}
+
   static forFeature(options: KafkaFeatureOptions): DynamicModule {
     const brokers = options.brokers || process.env.KAFKA_BROKERS?.split(',') || ['localhost:9092'];
 
