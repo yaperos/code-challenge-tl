@@ -372,7 +372,7 @@ El balance de **W-A** quedó exactamente en **0.00**, rechazando las peticiones 
 query: UPDATE "transfer_sagas" SET "step" = 'FX_AMBIGUOUS' ...
 ```
 
-**Estado Final de la transferencia:**
+**Estado Final de la transferencia: failureReason es null debido a que no se tiene certeza si acabó bien la transacción**
 ```json
 {
    "data":{
