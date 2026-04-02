@@ -94,6 +94,7 @@ docker-compose up -d
 
 # 2. Instalar y arrancar
 npm install
+npm run build
 npm run start
 
 # 3. Sembrar billeteras de prueba (ID: W-A y W-B)
@@ -114,15 +115,80 @@ A continuación se detallan las pruebas para validar los requerimientos técnico
    ```bash
    curl -X POST http://localhost:3003/transfers/T-001 -H "Content-Type: application/json" -d '{"fromWalletId": "W-A", "toWalletId": "W-B", "amount": 100, "fromCurrency":"USD", "toCurrency":"USD"}'
    ```
+
 2. **Consulta el modelo de lectura** (CQRS) de inmediato:
    ```bash
    curl http://localhost:3003/transfers/T-001
    ```
-   **Resultado:** El estado debe ser `completed` y la respuesta debe ser inmediata (< 500ms).
 3. **Valida los saldos finales** (W-A: 900, W-B: 100):
    ```bash
    curl http://localhost:3003/wallets
    ```
+**Ejecución del Comando:**
+```bash
+curl -i -X POST http://localhost:3003/transfers/T-001 \
+  -H "Content-Type: application/json" \
+  -d '{"fromWalletId": "W-A", "toWalletId": "W-B", "amount": 100, "fromCurrency":"USD", "toCurrency":"USD"}'
+```
+
+**Respuesta de la API:**
+```json
+{
+  "message": "Transfer saga initiated",
+  "transferId": "T-001"
+}
+```
+
+**Logs del Sistema (Orquestación):**
+```text
+[Nest] LOG [TransferOrchestrator] Resuming saga T-001 from step STARTED
+[Nest] LOG [WalletService] [DebitWallet] Debited 100 from wallet W-A for transfer T-001
+[Nest] LOG [WalletService] [CreditWallet] Credited 100 to wallet W-B for transfer T-001
+[Nest] LOG [FxService] FX Settled successfully for transfer T-001
+[Nest] LOG [TransferOrchestrator] [SettleFX] Settled for transfer T-001
+[Nest] LOG [TransferOrchestrator] [EmitReceipt] Receipt Emitted for T-001
+[Nest] LOG [TransferOrchestrator] Transfer T-001 COMPLETED successfully.
+```
+
+**Validación CQRS (GET /transfers/T-001):**
+```json
+{
+   "data":{
+      "transferId":"T-001",
+      "status":"completed",
+      "fromWallet":"W-A",
+      "toWallet":"W-B",
+      "amount":"100.00",
+      "failureReason":null,
+      "lastEventVersion":5,
+      "createdAt":"2026-04-02T20:15:24.339Z",
+      "updatedAt":"2026-04-02T20:15:24.596Z"
+   },
+   "meta":{
+      "consistencyModel":"eventual",
+      "stalenessWindowMs":500,
+      "note":"Read model is updated via projected events. Status reflects last known state."
+   }
+}
+```
+
+**Validacion de Wallets:**
+```json
+[
+   {
+      "id":"W-A",
+      "balance":"900.00",
+      "currency":"USD",
+      "version":2
+   },
+   {
+      "id":"W-B",
+      "balance":"100.00",
+      "currency":"USD",
+      "version":2
+   }
+]
+```
 
 ---
 
@@ -138,11 +204,68 @@ A continuación se detallan las pruebas para validar los requerimientos técnico
    curl http://localhost:3003/transfers/T-fail-1
    ```
    **Resultado:** `status: "failed"` y `failureReason: "Wallet not found"`.
+
 3. **Confirma la integridad** del saldo (W-A recupera sus 50 USD):
    ```bash
    curl http://localhost:3003/wallets
    ```
 
+#### Resultados de Ejecución Real (T-fail-1)
+
+**Comando:**
+```bash
+curl -i -X POST http://localhost:3003/transfers/T-fail-1 \
+  -H "Content-Type: application/json" \
+  -d '{"fromWalletId": "W-A", "toWalletId": "W-Z", "amount": 50, "fromCurrency":"USD", "toCurrency":"USD"}'
+```
+
+**Logs de Compensación:**
+```text
+[Nest] LOG [WalletService] [DebitWallet] Debited 50 from wallet W-A for transfer T-fail-1
+[Nest] WARN [TransferOrchestrator] Compensating saga T-fail-1 that failed at DEBIT_COMPLETED: Wallet not found
+[Nest] WARN [WalletService] Reversed debit for transfer T-fail-1
+[Nest] DEBUG [TransferReadModelProjector] Projecting TransferFailedEvent for T-fail-1
+```
+
+**Estado Final (CQRS):**
+```json
+{
+   "data":{
+      "transferId":"T-fail-1",
+      "status":"failed",
+      "fromWallet":"W-A",
+      "toWallet":"W-Z",
+      "amount":"50.00",
+      "failureReason":"Wallet not found",
+      "lastEventVersion":4,
+      "createdAt":"2026-04-02T20:28:02.746Z",
+      "updatedAt":"2026-04-02T20:28:02.862Z"
+   },
+   "meta":{
+      "consistencyModel":"eventual",
+      "stalenessWindowMs":500,
+      "note":"Read model is updated via projected events. Status reflects last known state."
+   }
+}
+```
+
+**Validacion de Wallets:**
+```json
+[
+   {
+      "id":"W-B",
+      "balance":"100.00",
+      "currency":"USD",
+      "version":2
+   },
+   {
+      "id":"W-A",
+      "balance":"900.00",
+      "currency":"USD",
+      "version":4
+   }
+]
+```
 ---
 
 ### 3. Seguridad ante concurrencia (Pessimistic Locking)
@@ -158,6 +281,66 @@ A continuación se detallan las pruebas para validar los requerimientos técnico
    ```
 2. **Resultado esperado:** Debido al `SELECT FOR UPDATE` en `WalletService`, las peticiones se procesan en orden. Las primeras 6 agotan el saldo y la 7ma falla con `Insufficient funds`. **W-A** jamás bajará de 0.
 
+3. **Confirma saldo final**: Donde W-A debe de ser 0 y W-B debe de ser 1000
+   ```bash  
+   curl http://localhost:3003/wallets
+   ```
+
+#### Resultados de Ejecución Real (10 concurrent requests)
+
+**Prueba de Carga (10 requests x 150 USD c/u):**
+```bash
+for i in {1..10}; do
+  curl -X POST http://localhost:3003/transfers/T-CONC-$i \
+    -H "Content-Type: application/json" \
+    -d '{"fromWalletId": "W-A", "toWalletId": "W-B", "amount": 150, "fromCurrency":"USD", "toCurrency":"USD"}' &
+done
+```
+
+**Evidencia de Bloqueo Pesimista y Control de Saldo (Logs):**
+```text
+# Las primeras transacciones (6 x 150 = 900) se procesan secuencialmente gracias al lock
+[Nest] LOG [TransferOrchestrator] Transfer T-CONC-5 COMPLETED successfully.
+[Nest] LOG [TransferOrchestrator] [EmitReceipt] Receipt Emitted for T-CONC-5
+query: UPDATE "transfer_read_model" SET "status" = 'completed' ... WHERE "transferId" = 'T-CONC-5'
+
+# Las transacciones excedentes fallan inmediatamente al detectar saldo 0.00
+# IDs Fallidos: T-CONC-6, T-CONC-7, T-CONC-8, T-CONC-9
+query: UPDATE "transfer_read_model" SET "status" = 'failed', 
+       "failureReason" = 'Wallet W-A has insufficient funds. Balance: 0.00, Required: 150' 
+       WHERE "transferId" = 'T-CONC-8'
+
+query: UPDATE "transfer_read_model" SET "status" = 'failed', 
+       "failureReason" = 'Wallet W-A has insufficient funds. Balance: 0.00, Required: 150' 
+       WHERE "transferId" = 'T-CONC-7'
+
+# ... (Repetido para T-CONC-6 y T-CONC-9)
+```
+
+**Balance Final Coherente:**
+El sistema garantiza que el balance nunca sea negativo. Tras intentar debitar 1500 USD (10x150) de un saldo de 900 USD:
+- **Éxito (6):** T-CONC-1, T-CONC-2, T-CONC-3, T-CONC-4, T-CONC-5, T-CONC-10.
+- **Fallido (4):** T-CONC-6, T-CONC-7, T-CONC-8, T-CONC-9 (Saldo 0.00).
+
+El balance de **W-A** quedó exactamente en **0.00**, rechazando las peticiones excedentes sin sobregiros.
+**Validacion de Wallets:**
+```json
+[
+   {
+      "id":"W-B",
+      "balance":"1000.00",
+      "currency":"USD",
+      "version":8
+   },
+   {
+      "id":"W-A",
+      "balance":"0.00",
+      "currency":"USD",
+      "version":10
+   }
+]
+```
+
 ---
 
 ### 4. Ampliación opcional: FX State Ambiguo (Timeout)
@@ -165,13 +348,69 @@ A continuación se detallan las pruebas para validar los requerimientos técnico
 
 1. **Simula un Timeout** de red (usando la palabra `timeout` en el ID):
    ```bash
-   curl -X POST http://localhost:3003/transfers/T-timeout-1 -H "Content-Type: application/json" -d '{"fromWalletId": "W-A", "toWalletId": "W-B", "amount": 10, "fromCurrency":"USD", "toCurrency":"PEN"}'
+   curl -X POST http://localhost:3003/transfers/T-timeout-1 -H "Content-Type: application/json" -d '{"fromWalletId": "W-B", "toWalletId": "W-A", "amount": 10, "fromCurrency":"USD", "toCurrency":"PEN"}'
    ```
 2. **Verifica el estado de excepción:**
    ```bash
    curl http://localhost:3003/transfers/T-timeout-1
    ```
    **Resultado:** `status: "in_progress (FX_AMBIGUOUS)"`. Los fondos quedan reservados hasta intervención manual.
+
+3. **Confirma la integridad** del saldo (W-B debe de tener 990 y W-A debe de tener 10)
+   ```bash
+   curl http://localhost:3003/wallets
+   ```
+
+#### Resultados de Ejecución Real (T-timeout-1)
+
+**Logs de Escalamiento:**
+```text
+[Nest] LOG [WalletService] [DebitWallet] Debited 10 from wallet W-A for transfer T-timeout-1
+[Nest] LOG [WalletService] [CreditWallet] Credited 10 to wallet W-B for transfer T-timeout-1
+[Nest] WARN [FxService] FX provider timeout for transfer T-timeout-1
+[Nest] ERROR [TransferOrchestrator] Transfer T-timeout-1 is in FX_AMBIGUOUS state. Needs manual intervention.
+query: UPDATE "transfer_sagas" SET "step" = 'FX_AMBIGUOUS' ...
+```
+
+**Estado Final de la transferencia:**
+```json
+{
+   "data":{
+      "transferId":"T-timeout-1",
+      "status":"in_progress (FX_AMBIGUOUS)",
+      "fromWallet":"W-B",
+      "toWallet":"W-A",
+      "amount":"10.00",
+      "failureReason":null,
+      "lastEventVersion":4,
+      "createdAt":"2026-04-02T20:50:26.074Z",
+      "updatedAt":"2026-04-02T20:50:26.691Z"
+   },
+   "meta":{
+      "consistencyModel":"eventual",
+      "stalenessWindowMs":500,
+      "note":"Read model is updated via projected events. Status reflects last known state."
+   }
+}
+```
+
+**Validacion de Wallets:**
+```json
+[
+   {
+      "id":"W-B",
+      "balance":"990.00",
+      "currency":"USD",
+      "version":9
+   },
+   {
+      "id":"W-A",
+      "balance":"10.00",
+      "currency":"USD",
+      "version":11
+   }
+]
+```
 
 ---
 
