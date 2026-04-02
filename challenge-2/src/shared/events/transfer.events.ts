@@ -22,3 +22,11 @@ export class TransferFailedEvent {
     public readonly version: number,
   ) {}
 }
+
+export class TransferStepEvent {
+  constructor(
+    public readonly transferId: string,
+    public readonly step: string,
+    public readonly version: number,
+  ) {}
+}

@@ -1,8 +1,8 @@
-import { Entity, Column, PrimaryGeneratedColumn, VersionColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, VersionColumn, PrimaryColumn } from 'typeorm';
 
 @Entity('wallets')
 export class Wallet {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn()
   id: string;
 
   @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
@@ -22,10 +22,10 @@ export class DebitRecord {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column('uuid')
+  @Column()
   transferId: string;
 
-  @Column('uuid')
+  @Column()
   walletId: string;
 
   @Column('decimal', { precision: 12, scale: 2 })
@@ -40,7 +40,7 @@ export class ReversalRecord {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column('uuid', { unique: true })
+  @Column({ unique: true })
   transferId: string;
 
   @Column('timestamp', { default: () => 'CURRENT_TIMESTAMP' })

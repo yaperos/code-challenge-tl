@@ -2,7 +2,7 @@ import { Entity, Column, PrimaryColumn, CreateDateColumn, UpdateDateColumn } fro
 
 @Entity('transfer_read_model')
 export class TransferReadModel {
-  @PrimaryColumn('uuid')
+  @PrimaryColumn()
   transferId: string;
 
   @Column()

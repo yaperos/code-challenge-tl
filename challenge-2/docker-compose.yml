@@ -10,7 +10,7 @@ services:
       # Let DB creation be automatic for default db
       POSTGRES_DB: yape_transfer
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

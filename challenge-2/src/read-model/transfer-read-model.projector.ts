@@ -3,7 +3,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TransferReadModel } from './read-model.entity';
-import { TransferStartedEvent, TransferCompletedEvent, TransferFailedEvent } from '../shared/events/transfer.events';
+import { TransferStartedEvent, TransferCompletedEvent, TransferFailedEvent, TransferStepEvent } from '../shared/events/transfer.events';
 
 @Injectable()
 export class TransferReadModelProjector {
@@ -55,6 +55,19 @@ export class TransferReadModelProjector {
       transferId: event.transferId,
       status: 'failed',
       failureReason: event.reason,
+      lastEventVersion: event.version,
+    });
+  }
+
+  @OnEvent('TransferStepEvent')
+  async onStepUpdated(event: TransferStepEvent): Promise<void> {
+    this.logger.debug(`Projecting TransferStepEvent for ${event.transferId}: ${event.step}`);
+    const existing = await this.repo.findOne({ where: { transferId: event.transferId } });
+    if (existing && existing.lastEventVersion >= event.version) return;
+
+    await this.repo.save({
+      transferId: event.transferId,
+      status: `in_progress (${event.step})`,
       lastEventVersion: event.version,
     });
   }

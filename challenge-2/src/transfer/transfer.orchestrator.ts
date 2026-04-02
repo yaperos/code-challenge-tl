@@ -4,7 +4,7 @@ import { SagaRepository } from './saga.repository';
 import { SagaStep, TransferDto } from './transfer.entity';
 import { WalletService } from '../wallet/wallet.service';
 import { FxService, TimeoutError } from '../fx/fx.service';
-import { TransferStartedEvent, TransferCompletedEvent, TransferFailedEvent } from '../shared/events/transfer.events';
+import { TransferStartedEvent, TransferCompletedEvent, TransferFailedEvent, TransferStepEvent } from '../shared/events/transfer.events';
 
 @Injectable()
 export class TransferOrchestrator {
@@ -45,31 +45,39 @@ export class TransferOrchestrator {
         await this.walletService.debit(transferId, saga.dto.fromWalletId, saga.dto.amount);
         await this.sagaRepo.updateStep(transferId, SagaStep.DEBIT_COMPLETED);
         saga.step = SagaStep.DEBIT_COMPLETED;
+        this.eventEmitter.emit('TransferStepEvent', new TransferStepEvent(transferId, saga.step, saga.version + 1));
       }
       
       if (saga.step === SagaStep.DEBIT_COMPLETED) {
         await this.walletService.credit(transferId, saga.dto.toWalletId, saga.dto.amount);
         await this.sagaRepo.updateStep(transferId, SagaStep.CREDIT_COMPLETED);
         saga.step = SagaStep.CREDIT_COMPLETED;
+        this.eventEmitter.emit('TransferStepEvent', new TransferStepEvent(transferId, saga.step, saga.version + 2));
       }
       
       if (saga.step === SagaStep.CREDIT_COMPLETED) {
         await this.fxService.settle(transferId, saga.dto.fromCurrency, saga.dto.toCurrency, saga.dto.amount);
+        this.logger.log(`[SettleFX] Settled for transfer ${transferId}`);
         await this.sagaRepo.updateStep(transferId, SagaStep.FX_SETTLED);
         saga.step = SagaStep.FX_SETTLED;
       }
       
       if (saga.step === SagaStep.FX_SETTLED) {
-        // Receipt service emit o just completion
+        // EmitReceipt step
+        this.logger.log(`[EmitReceipt] Receipt Emitted for ${transferId}`);
+        
         await this.sagaRepo.updateStep(transferId, SagaStep.COMPLETED);
         saga.step = SagaStep.COMPLETED;
-        this.eventEmitter.emit('TransferCompletedEvent', new TransferCompletedEvent(transferId, saga.version + 4)); // +4 para simular incremento de version por steps
+        this.eventEmitter.emit('TransferCompletedEvent', new TransferCompletedEvent(transferId, saga.version + 4));
         this.logger.log(`Transfer ${transferId} COMPLETED successfully.`);
       }
     } catch (error) {
       if (error instanceof TimeoutError) {
         // Escalation: FX state is ambiguous, manual review needed, DO NOT compensate.
         await this.sagaRepo.updateStep(transferId, SagaStep.FX_AMBIGUOUS);
+        const updatedSaga = await this.sagaRepo.findById(transferId);
+        this.eventEmitter.emit('TransferStepEvent', new TransferStepEvent(transferId, SagaStep.FX_AMBIGUOUS, updatedSaga?.version || 0));
+        
         this.logger.error(`Transfer ${transferId} is in FX_AMBIGUOUS state. Needs manual intervention.`);
         return;
       }

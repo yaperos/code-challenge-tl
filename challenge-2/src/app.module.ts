@@ -19,7 +19,7 @@ import { TransferReadModel } from './read-model/read-model.entity';
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.POSTGRES_HOST || 'localhost',
-      port: 5432,
+      port: process.env.POSTGRES_PORT ? parseInt(process.env.POSTGRES_PORT, 10) : 5433,
       username: process.env.POSTGRES_USER || 'postgres',
       password: process.env.POSTGRES_PASSWORD || 'password',
       database: process.env.POSTGRES_DB || 'yape_transfer',

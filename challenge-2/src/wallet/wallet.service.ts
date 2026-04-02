@@ -67,7 +67,7 @@ export class WalletService {
       });
 
       await queryRunner.commitTransaction();
-      this.logger.log(`Debited ${amount} from wallet ${walletId} for transfer ${transferId}`);
+      this.logger.log(`[DebitWallet] Debited ${amount} from wallet ${walletId} for transfer ${transferId}`);
     } catch (e) {
       await queryRunner.rollbackTransaction();
       throw e;
@@ -104,7 +104,7 @@ export class WalletService {
         .execute();
 
       await queryRunner.commitTransaction();
-      this.logger.log(`Credited ${amount} to wallet ${walletId} for transfer ${transferId}`);
+      this.logger.log(`[CreditWallet] Credited ${amount} to wallet ${walletId} for transfer ${transferId}`);
     } catch (e) {
       await queryRunner.rollbackTransaction();
       throw e;

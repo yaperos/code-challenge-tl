@@ -11,7 +11,7 @@ export enum SagaStep {
   FAILED = 'FAILED',
 }
 
-export interface TransferDto {
+export class TransferDto {
   fromWalletId: string;
   toWalletId: string;
   amount: number;
@@ -21,7 +21,7 @@ export interface TransferDto {
 
 @Entity('transfer_sagas')
 export class TransferSaga {
-  @PrimaryColumn('uuid')
+  @PrimaryColumn()
   transferId: string;
 
   @Column({ type: 'varchar', length: 30, default: SagaStep.STARTED })
