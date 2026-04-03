@@ -1,15 +1,10 @@
-import { IsNumber, IsString, IsNotEmpty, IsPositive } from 'class-validator';
+import { createZodDto } from 'nestjs-zod';
+import { z } from 'zod';
 
-export class CreatePaymentDto {
-  @IsNumber()
-  @IsPositive()
-  amount: number;
+export const CreatePaymentSchema = z.object({
+  amount: z.number().positive({ message: "Amount must be a positive number" }),
+  currency: z.string().length(3).toUpperCase(),
+  country: z.string().length(2).toUpperCase(),
+});
 
-  @IsString()
-  @IsNotEmpty()
-  currency: string;
-
-  @IsString()
-  @IsNotEmpty()
-  country: string;
-}
+export class CreatePaymentDto extends createZodDto(CreatePaymentSchema) {}

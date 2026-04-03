@@ -48,12 +48,18 @@ sequenceDiagram
     end
 
     Note over K,S: 4. Consistencia Final (Saga)
-    K->>S: Consume {pais}.fraud.approved / {pais}.ledger.written
-    S->>DB: Verify processed_events (fraud & ledger)
+    rect rgba(124, 116, 116, 1)
+        Note right of S: Multi-Trigger Idempotency
+        K->>S: Consume {pais}.fraud.approved
+        S->>DB: Save SagaConsumer_Fraud
+        K->>S: Consume {pais}.ledger.written
+        S->>DB: Save SagaConsumer_Ledger
+    end
+    S->>DB: Verify both keys exist for eventId
     alt Ambas condiciones cumplidas
         S->>DB: UPDATE Payment (SETTLED)
         S->>K: Emit {pais}.payment.settled.v1
-    else Fallo en validación
+    else Fallo detectado (DLT)
         S->>DB: UPDATE Payment (FAILED)
         S->>K: Emit {pais}.payment.failed.v1
     end
@@ -79,9 +85,11 @@ sequenceDiagram
     *   **Idempotencia:** Todos usan la tabla `processed_events` para asegurar que un mismo `eventId` nunca sea procesado dos veces.
 
 5.  **Saga Consumer (Orquestador de Consistencia Final):**
-    *   Recoge los eventos de aprobación de Fraude y Ledger.
-    *   **Cierre Exitoso:** Cuando ambas condiciones se cumplen, actualiza el pago a **`SETTLED`** y emite el evento final de negocio **`payment.settled.v1`**.
-    *   **Cierre Fallido:** Si recibe un evento de fallo (ej. de DLT), actualiza el pago a **`FAILED`** y emite **`payment.failed.v1`**.
+    *   **Garantía Multi-Evento:** Recoge confirmaciones de Fraude y Ledger. Como son eventos distintos en Kafka, utiliza una arquitectura de **idempotencia granular**:
+        *   `SagaConsumer_Fraud`: Registra que el mensaje de aprobación de fraude fue procesado por la Saga.
+        *   `SagaConsumer_Ledger`: Registra que el mensaje de escritura en libro contable fue procesado por la Saga.
+    *   **Cierre Exitoso:** Cuando ambas llaves existen para el mismo `eventId` original, actualiza el pago a **`SETTLED`** y emite **`payment.settled.v1`**.
+    *   **Cierre Fallido:** Si recibe un evento de fallo (marcado como `SagaConsumer_Failed`), actualiza el pago a **`FAILED`** y emite **`payment.failed.v1`** de forma atómica.
 
 ---
 
@@ -94,25 +102,64 @@ sequenceDiagram
     - **Coordino** el estado final mediante un `SagaConsumer` para alterar la consistencia final del pago a `SETTLED`.
 ### Modelo de Datos (PostgreSQL)
 
+```mermaid
+erDiagram
+    payments ||--o{ outbox_events : "id = aggregateId"
+    outbox_events ||--o{ processed_events : "eventId = eventId"
+
+    payments {
+        uuid id PK
+        decimal amount
+        string currency
+        string country
+        enum status
+        timestamp createdAt
+        timestamp updatedAt
+    }
+
+    outbox_events {
+        uuid eventId PK
+        uuid aggregateId FK
+        string eventType
+        jsonb payload
+        enum status
+        int retryCount
+        timestamp createdAt
+        timestamp sentAt
+    }
+
+    processed_events {
+        uuid eventId PK, FK
+        string consumer PK
+        timestamp processedAt
+    }
+```
+
 **Utilizo** tres tablas clave para garantizar la atomicidad y la idempotencia:
 
 1. **`payments`**: Almacena el estado actual del pago.
-   - `id` (UUID, PK): Identificador único del pago.
-   - `amount` (Decimal): Monto de la transacción.
-   - `status` (Enum): PENDING, SETTLED, FAILED.
-   - `currency`, `country`: Metadatos de la transacción.
+   - `id` (UUID, PK): Identificador único del pago generado al momento de la creación.
+   - `amount` (Decimal): Monto numérico de la transacción.
+   - `currency` (String): Moneda del pago (ej. USD, PEN).
+   - `country` (String): Código del país para el ruteo de eventos (ej. PE, MX).
+   - `status` (Enum): Estado actual del ciclo de vida (`PENDING`, `SETTLED`, `FAILED`).
+   - `createdAt` (Timestamp): Fecha de creación del registro.
+   - `updatedAt` (Timestamp): Última vez que se actualizó el registro (útil para auditoría de cambios de estado).
 
 2. **`outbox_events`**: Implemento el Outbox Pattern.
-   - `eventId` (UUID, PK): ID único del evento.
-   - `aggregateId` (UUID): Referencia al `payment.id`.
-   - `eventType` (String): Ejemplo `payment.created.v1`.
-   - `payload` (JSONB): Datos serializados del evento.
-   - `status` (Enum): PENDING, SENT.
+   - `eventId` (UUID, PK): Identificador único del evento para rastreo global.
+   - `aggregateId` (UUID): Referencia al ID del pago (`payment.id`) que originó el evento.
+   - `eventType` (String): El tipo de evento para despacho (ej. `payment.created.v1`).
+   - `payload` (JSONB): El cuerpo completo del mensaje serializado que será enviado a Kafka.
+   - `status` (Enum): Estado del envío por parte del Relay (`PENDING`, `SENT`, `FAILED`).
+   - `retryCount` (Int): Contador de intentos fallidos de publicación por el proceso Relay.
+   - `createdAt` (Timestamp): Momento en que el evento fue insertado en la tabla.
+   - `sentAt` (Timestamp): Momento exacto en que el Relay confirmó la publicación en el broker de Kafka.
 
 3. **`processed_events`**: Garantizo la idempotencia de los consumidores.
-   - `eventId` (UUID, PK): ID del evento procesado.
-   - `consumer` (String, PK): Nombre del microservicio que procesó el evento (ej. `fraud`, `ledger`).
-   - `processedAt` (Timestamp): Fecha de procesamiento.
+   - `eventId` (UUID, PK): ID del evento capturado desde Kafka (proviene de `outbox_events.eventId`).
+   - `consumer` (String, PK): Nombre del microservicio o lógica que procesó el evento (ej. `FraudConsumer`).
+   - `processedAt` (Timestamp): Registro de tiempo para control y auditoría de la idempotencia.
 
 ## Tech Stack
 - **Framework:** NestJS
@@ -120,6 +167,16 @@ sequenceDiagram
 - **Base de Datos:** PostgreSQL
 - **ORM:** TypeORM
 
+## Mejoras en el API Rest (Robustez y Seguridad)
+
+Como parte de la evolución de la plataforma, **he implementado** una serie de capas de seguridad y optimización para asegurar que la API sea de grado producción:
+
+1.  **Validación Estricta con Zod:** **He reemplazado** la validación tradicional por esquemas de **Zod**. Esto me permite garantizar que tanto el cuerpo de la creación de pagos como los parámetros de consulta sigan una estructura rígida, evitando inyecciones de datos o estados corruptos.
+2.  **Protección contra Abusos (Rate Limit):** **He configurado** un sistema de limitación de tasa (`@nestjs/throttler`) que restringe a un máximo de **100 peticiones por minuto** por IP. Con esto, **prevengo** ataques de fuerza bruta y denegación de servicio (DoS) a nivel de aplicación.
+3.  **Ofuscación de Errores e Infraestructura:** **He implementado** un filtro global de excepciones (`AllExceptionsFilter`). Ante cualquier fallo interno (500), el sistema **devuelve** un mensaje genérico al cliente para no revelar detalles técnicos de la base de datos o el código, mientras que **mantengo** un registro detallado en los logs internos para auditoría.
+4.  **Capa de Acceso a Datos (DAL):** **He abstraído** la interacción con la base de datos mediante un `PaymentsRepository`. Esto me permite desacoplar la lógica de negocio del ORM y asegurar que el acceso a datos sea controlado y reutilizable.
+5.  **Paginación de Alto Rendimiento:** **He añadido** soporte para paginación mediante **Cursor** (ideal para feeds infinitos) y **Offset** (para navegación por páginas tradicionales), permitiendo que la API maneje volúmenes masivos de datos de forma eficiente sin sobrecargar la memoria.
+6.  **Optimización de Respuesta (Cache):** **He integrado** una capa de caché en memoria para el endpoint de consulta de pagos. Esto **convierte** consultas que podrían ser costosas en respuestas instantáneas de pocos milisegundos para peticiones repetitivas.
 ---
 
 ## Cómo compilar y ejecutar
@@ -132,6 +189,7 @@ docker-compose up -d
 2. **Instalar dependencias**  
 **Aseguro** tener Node.js (v18+) y estar ubicado en la carpeta del challenge.
 ```bash
+mv .env_sample .env
 npm install
 npm run build
 ```
@@ -283,7 +341,10 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
     --------------------------------------+----------------
      cbe445b6-e866-4140-aeac-9a210a60cedb | FraudConsumer
      cbe445b6-e866-4140-aeac-9a210a60cedb | LedgerConsumer
-    (2 rows)
+     cbe445b6-e866-4140-aeac-9a210a60cedb | NotifyConsumer
+     cbe445b6-e866-4140-aeac-9a210a60cedb | SagaConsumer_Fraud
+     cbe445b6-e866-4140-aeac-9a210a60cedb | SagaConsumer_Ledger
+    (5 rows)
     ``` 
 *   **Paso B (Simular Duplicado):** Puedes forzar el re-procesamiento (por configuración de Kafka o re-enviando el mismo `eventId` manualmente al tópico). 
 
@@ -312,9 +373,13 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
     --------------------------------------+----------------
     cbe445b6-e866-4140-aeac-9a210a60cedb | FraudConsumer
     cbe445b6-e866-4140-aeac-9a210a60cedb | LedgerConsumer
-    (2 rows)
+    cbe445b6-e866-4140-aeac-9a210a60cedb | NotifyConsumer
+    cbe445b6-e866-4140-aeac-9a210a60cedb | SagaConsumer_Fraud
+    cbe445b6-e866-4140-aeac-9a210a60cedb | SagaConsumer_Ledger
+    (5 rows)
     ```
-*   **Aclaración de Solidez:** Las claves de idempotencia residen en el **lado del consumidor** (clave compuesta: `eventId` + `consumer_name`), asegurando que cada lógica de negocio sea "self-contained" y resiliente.
+*   **Aclaración de Solidez:** Las claves de idempotencia residen en el **lado del consumidor** (clave compuesta: `eventId` + `consumer_name`), asegurando que cada lógica de negocio sea "self-contained" y resiliente. 
+    *   *Nota sobre la Saga:* El `SagaConsumer` utiliza dos claves separadas (`SagaConsumer_Fraud` y `SagaConsumer_Ledger`) porque escucha dos eventos distintos para el mismo pago. Esto garantiza que la Saga se active exactamente una vez por cada confirmación (Fraude y Ledger) sin que la primera bloquee la llegada de la segunda por colisión de clave.
 
 ---
 
@@ -470,6 +535,9 @@ docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list | grep '
 
 Resultado:
 ```
+co.payment.created.v1
+co.payment.failed.v1
+co.payment.fraud.approved.v1
 co.payment.ledger.written.v1
 gen.payment.created.v1
 gen.payment.failed.v1
@@ -484,6 +552,7 @@ pe.payment.created.v1.dlt
 pe.payment.failed.v1
 pe.payment.fraud.approved.v1
 pe.payment.ledger.written.v1
+pe.payment.settled.v1
 ```
 
 **2. Prueba de flujo segregado (PE vs MX):**

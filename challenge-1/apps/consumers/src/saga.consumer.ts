@@ -22,7 +22,14 @@ export class SagaConsumer {
   ])
   async handleFraudApproved(@Payload() message: any): Promise<void> {
     const aggregateId = message.aggregateId || message.id;
-    await this.trySettlePayment(message.eventId, aggregateId);
+    const eventId = message.eventId || message.id;
+    
+    // Idempotency check for SagaConsumer itself processing THIS specific message
+    const alreadyProcessed = await this.processedRepo.exists(eventId, 'SagaConsumer_Fraud');
+    if (alreadyProcessed) return;
+
+    await this.processedRepo.markProcessed(eventId, 'SagaConsumer_Fraud');
+    await this.trySettlePayment(eventId, aggregateId);
   }
 
   @EventPattern([
@@ -33,7 +40,14 @@ export class SagaConsumer {
   ])
   async handleLedgerWritten(@Payload() message: any): Promise<void> {
     const aggregateId = message.aggregateId || message.id;
-    await this.trySettlePayment(message.eventId, aggregateId);
+    const eventId = message.eventId || message.id;
+
+    // Idempotency check for SagaConsumer itself processing THIS specific message
+    const alreadyProcessed = await this.processedRepo.exists(eventId, 'SagaConsumer_Ledger');
+    if (alreadyProcessed) return;
+
+    await this.processedRepo.markProcessed(eventId, 'SagaConsumer_Ledger');
+    await this.trySettlePayment(eventId, aggregateId);
   }
 
   @EventPattern([
@@ -44,9 +58,26 @@ export class SagaConsumer {
   ])
   async handlePaymentFailed(@Payload() message: any): Promise<void> {
     const aggregateId = message.aggregateId || message.id;
+    const eventId = message.eventId || message.id;
+
+    if (!eventId) {
+      this.logger.error(`Saga received failure for payment ${aggregateId} but no eventId was found in the message! Cannot mark idempotency.`);
+      // Still update the payment status to FAILED for consistency, but skip idempotency registration
+      await this.dataSource.manager.update(
+        Payment, 
+        { id: aggregateId, status: PaymentStatus.PENDING }, 
+        { status: PaymentStatus.FAILED }
+      );
+      return;
+    }
+
+    const alreadyProcessed = await this.processedRepo.exists(eventId, 'SagaConsumer_Failed');
+    if (alreadyProcessed) return;
+
     this.logger.warn(`Saga picking up failure for payment ${aggregateId}`);
+    await this.processedRepo.markProcessed(eventId, 'SagaConsumer_Failed');
     
-    // Atomically update DB to FAILED. If already updated, it won't trigger again.
+    // Atomically update DB to FAILED.
     await this.dataSource.manager.update(
       Payment, 
       { id: aggregateId, status: PaymentStatus.PENDING }, 
@@ -57,7 +88,7 @@ export class SagaConsumer {
   private async trySettlePayment(eventId: string, aggregateId: string): Promise<void> {
     if (!eventId || !aggregateId) return;
 
-    // Check if both Fraud and Ledger processed
+    // Check if both Fraud and Ledger processed for the ORIGINAL event
     const fraudProcessed = await this.processedRepo.exists(eventId, 'FraudConsumer');
     const ledgerProcessed = await this.processedRepo.exists(eventId, 'LedgerConsumer');
 
@@ -78,19 +109,25 @@ export class SagaConsumer {
           const countryPrefix = (payment.country || 'gen').toLowerCase();
           this.logger.log(`Emitting success event for ${aggregateId} to ${countryPrefix}.payment.settled.v1`);
           
-          this.kafkaClient.emit(`${countryPrefix}.payment.settled.v1`, {
-            key: aggregateId,
-            value: { 
-              aggregateId, 
-              eventId, 
-              status: 'SETTLED',
-              amount: payment.amount,
-              currency: payment.currency
-            }
-          });
+          try {
+            await this.kafkaClient.emit(`${countryPrefix}.payment.settled.v1`, {
+              key: aggregateId,
+              value: { 
+                aggregateId, 
+                eventId, 
+                status: 'SETTLED',
+                amount: payment.amount,
+                currency: payment.currency
+              }
+            }).toPromise();
+          } catch (error) {
+            this.logger.error(`Failed to emit settled event for ${aggregateId}: ${error.message}`);
+            // In a real production app, we would use an outbox here too or a retry mechanism
+          }
         }
       } else {
-        this.logger.debug(`Payment ${aggregateId} already settled or not in PENDING state.`);
+        // Silencing or reducing prominence of this log as it's an expected race condition
+        this.logger.debug(`Payment ${aggregateId} reached settlement condition but was already processed.`);
       }
     }
   }

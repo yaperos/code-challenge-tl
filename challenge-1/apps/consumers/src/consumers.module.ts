@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
-import { ClientsModule, Transport } from '@nestjs/microservices';
+import { Module, OnModuleInit, Inject } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { ClientsModule, Transport, ClientKafka } from '@nestjs/microservices';
 import { DatabaseModule } from '@app/shared';
 import { DispatcherController } from './dispatcher.controller';
 import { FraudConsumer } from './fraud.consumer';
@@ -10,6 +11,7 @@ import { ProcessedEventsRepository } from './processed-events.repository';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
     DatabaseModule,
     ClientsModule.register([
       {
@@ -38,4 +40,14 @@ import { ProcessedEventsRepository } from './processed-events.repository';
     ProcessedEventsRepository
   ],
 })
-export class ConsumersModule {}
+export class ConsumersModule implements OnModuleInit {
+  constructor(
+    @Inject('KAFKA_CLIENT') private readonly kafkaClient: ClientKafka,
+  ) {}
+
+  async onModuleInit() {
+    // Explicitly connect to Kafka to avoid "no leader" errors on the first emit
+    await this.kafkaClient.connect();
+    console.log('Kafka Client connected in ConsumersModule');
+  }
+}

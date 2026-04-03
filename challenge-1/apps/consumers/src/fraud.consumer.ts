@@ -75,10 +75,12 @@ export class FraudConsumer {
       },
     });
 
+    const eventId = message.eventId || message.id;
+
     this.logger.warn(`Emitting failure event to ${countryPrefix}.payment.failed.v1`);
     this.kafkaClient.emit(`${countryPrefix}.payment.failed.v1`, {
       key: aggregateId,
-      value: { aggregateId, reason: error.message },
+      value: { aggregateId, eventId, reason: error.message },
     });
   }
 }
