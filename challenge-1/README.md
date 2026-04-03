@@ -21,64 +21,64 @@ sequenceDiagram
 
     Note over C,API: 1. Creación Atómica
     C->>API: POST /payments
-    API->>DB: START TRANSACTION
-    API->>DB: INSERT Payment (PENDING)
-    API->>DB: INSERT OutboxEvent (PENDING)
+    API->>DB: INICIAR TRANSACCIÓN
+    API->>DB: INSERTAR Pago (PENDIENTE)
+    API->>DB: INSERTAR Evento Outbox (PENDIENTE)
     API->>DB: COMMIT
-    API-->>C: 201 Created (paymentId)
+    API-->>C: 201 Creado (paymentId)
 
     Note over R,DB: 2. Publicación Asíncrona (Relay)
     loop Cada 5 segundos (@Cron)
-        R->>DB: SELECT PENDING events
-        R->>K: Publish {pais}.payment.created.v1
-        R->>DB: UPDATE OutboxEvent (SENT)
+        R->>DB: SELECCIONAR eventos PENDIENTES
+        R->>K: Publicar {pais}.payment.created.v1
+        R->>DB: ACTUALIZAR Evento Outbox (ENVIADO)
     end
 
     Note over K,D: 3. Procesamiento Paralelo e Idempotencia
-    K->>D: Consume {pais}.payment.created.v1
-    par Fraud Check
-        D->>DB: Check & Save Idempotency
-        D->>K: Emit {pais}.payment.fraud.approved.v1
-    and Ledger Write
-        D->>DB: Check & Save Idempotency
-        D->>K: Emit {pais}.payment.ledger.written.v1
-    and Notify (Brevo)
-        D->>N: Consume {pais}.payment.created.v1
+    K->>D: Consumir {pais}.payment.created.v1
+    par Verificación de Fraude
+        D->>DB: Verificar y Guardar Idempotencia
+        D->>K: Emitir {pais}.payment.fraud.approved.v1
+    and Registro en Libro (Ledger)
+        D->>DB: Verificar y Guardar Idempotencia
+        D->>K: Emitir {pais}.payment.ledger.written.v1
+    and Notificar (Brevo)
+        D->>N: Consumir {pais}.payment.created.v1
         N-->>C: Email (Confirmación de Recepción)
     end
 
     Note over K,S: 4. Consistencia Final (Saga)
     rect rgba(124, 116, 116, 1)
-        Note right of S: Multi-Trigger Idempotency
-        K->>S: Consume {pais}.fraud.approved
-        S->>DB: Save SagaConsumer_Fraud
-        K->>S: Consume {pais}.ledger.written
-        S->>DB: Save SagaConsumer_Ledger
+        Note right of S: Idempotencia de Disparadores Múltiples
+        K->>S: Consumir {pais}.fraud.approved
+        S->>DB: Guardar SagaConsumer_Fraud
+        K->>S: Consumir {pais}.ledger.written
+        S->>DB: Guardar SagaConsumer_Ledger
     end
-    S->>DB: Verify both keys exist for eventId
+    S->>DB: Verificar que ambas llaves existen para eventId
     alt Ambas condiciones cumplidas
-        S->>DB: UPDATE Payment (SETTLED)
-        S->>K: Emit {pais}.payment.settled.v1
+        S->>DB: ACTUALIZAR Pago (LIQUIDADO/SETTLED)
+        S->>K: Emitir {pais}.payment.settled.v1
     else Fallo detectado (DLT)
-        S->>DB: UPDATE Payment (FAILED)
-        S->>K: Emit {pais}.payment.failed.v1
+        S->>DB: ACTUALIZAR Pago (FALLIDO)
+        S->>K: Emitir {pais}.payment.failed.v1
     end
 ```
 
 ### Explicación del Proceso
 
-1.  **Transactional Outbox (API & DB):**
+1.  **Transactional Outbox (API y BD):**
     *   **Hay 2 tablas** Para garantizar la atomicidad. Al guardar el `Payment` (negocio) y el `OutboxEvent` (mensaje pendiente) en la **misma transacción de base de datos**, aseguramos que no se pierdan mensajes si el sistema falla antes de avisar a Kafka. 
     *   Si la transacción local falla, no hay ni pago ni mensaje. Si tiene éxito, ambos están persistidos de forma segura.
 
-2.  **Outbox Relay (The Worker):**
+2.  **Outbox Relay (El Trabajador / Worker):**
     *   Es un proceso independiente que actúa como un "cartero". Su única función es leer la tabla `outbox_events`, publicar los mensajes en Kafka y marcarlos como `SENT`.
     *   Esto desacopla la disponibilidad de la API de la de Kafka (si Kafka no está disponible, el Relay reintenta luego).
 
-3.  **Dispatcher (Consumers Entry Point):**
+3.  **Dispatcher (Punto de Entrada de Consumidores):**
     *   Centraliza la recepción del evento `payment.created.v1` y dispara en paralelo las evaluaciones de **Fraude** y **Libro Contable (Ledger)**.
 
-4.  **Consumidores Especializados (Fraud, Ledger & Notify):**
+4.  **Consumidores Especializados (Fraude, Libro Contable y Notificación):**
     *   **Fraud Check:** Realiza el scoring de riesgo. Si es exitoso, emite `payment.fraud.approved.v1`.
     *   **Ledger Write:** Registra el movimiento financiero (débito/crédito) y emite `payment.ledger.written.v1`.
     *   **Notify (Brevo):** Escucha el evento inicial de creación (`payment.created.v1`) y envía una confirmación de recepción inmediata al usuario (`barfrank2020@gmail.com`) utilizando plantillas HTML personalizadas.
@@ -161,7 +161,7 @@ erDiagram
    - `consumer` (String, PK): Nombre del microservicio o lógica que procesó el evento (ej. `FraudConsumer`).
    - `processedAt` (Timestamp): Registro de tiempo para control y auditoría de la idempotencia.
 
-## Tech Stack
+## Tecnologías Utilizadas (Tech Stack)
 - **Framework:** NestJS
 - **Microservicios/Messaging:** Nativos NestJS Microservices, Kafka
 - **Base de Datos:** PostgreSQL
@@ -203,7 +203,7 @@ npm run build
 
 ## Arquitecturas y Decisiones (ADR)
 
-### ADR 1: The Transactional Outbox vs Two-Phase Commit 
+### ADR 1: Transactional Outbox vs Two-Phase Commit 
 - **Decisión:** **Implementé** el Transactional Outbox pattern.
 - **Razón:** El uso de 2PC o llamar a `kafkaClient.emit` dentro de una transacción genera pérdida de datos cuando el bloque local es exitoso pero el mensaje al Broker fracasa. Guardar una copia serializada del payload como `OutboxEvent` en PostgreSQL nos permite delegar a un *Poller Relay* la publicación, desacoplándonos de la disponibilidad instantánea de Kafka.
 
@@ -211,7 +211,7 @@ npm run build
 - **Decisión:** **Elegí** un NestJS Standard Monorepo (`apps/api`, `apps/relay`, `apps/consumers`).
 - **Razón:** Al tratarse de un challenge, y con la estricta idea de no acoplar los consumer / relay en procesos `setInterval()` internos de la API, el monorepo nos brinda separación de subprocesos y puertos, además de permitir exportar las entidades Base de datos (`Payment`, `OutboxEvent`) y los DTOs en una única librería `libs/shared` consolidada, sin duplicidad de esfuerzo.
 
-### ADR 3: Coreografía del Estado Final (Eventual Consistency)
+### ADR 3: Coreografía del Estado Final (Consistencia Eventual)
 - **Decisión:** **Decidí** coreografiar el estado de los pagos desde un tercer oyente `SagaConsumer`.
 - **Razón:** En lugar de hacer que Fraud o Ledger modifiquen el `PaymentTable` diréctamente (creando cuellos de acceso a tabla central), enviamos una repuesta Kafka `payment.fraud.approved` que un saga local evalúa. Esto documenta con claridad la garantía *eventual* donde la API devuelve el Payload intacto con semántica PENDING hasta la convergencia final.
 
@@ -243,7 +243,7 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
 
 ### Requerimientos realizados
 - Por motivos prácticos, **asumo** una conexión genérica a la BD en todo el Monorepo. En producción, **usaría** credenciales restrictivas.
-- Dead Letter Queue (`DLT`) y Retry Policies: **Configuré** el relay para que reintente sin fin. Si los consumidores fallan (simulado con `amount > 1000000`), el `FraudConsumer` invoca `sendToDlt` y deriva al sub-tópico `.dlt`, enviando a su vez `payment.failed.v1` donde **mi Saga** declara el estado `FAILED`.
+- Dead Letter Queue (`DLT`) y Políticas de Reintento: **Configuré** el relay para que reintente sin fin. Si los consumidores fallan (simulado con `amount > 1000000`), el `FraudConsumer` invoca `sendToDlt` y deriva al sub-tópico `.dlt`, enviando a su vez `payment.failed.v1` donde **mi Saga** declara el estado `FAILED`.
 
 ---
 
@@ -278,7 +278,7 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
         "updatedAt":"2026-04-03T08:23:17.022Z"
         }
     ```
-*   **Paso C (Validar DB):** Verifica que el pago está `PENDING` y el outbox tiene el evento listo pero no enviado.
+*   **Paso C (Validar BD):** Verifica que el pago está `PENDING` y el outbox tiene el evento listo pero no enviado.
     ```bash
     docker exec -it challenge_db psql -U user -d payments_db -c "SELECT status, id FROM payments; SELECT status, \"aggregateId\" FROM outbox_events WHERE status = 'PENDING';"
     ```
@@ -324,7 +324,7 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
     (1 row)
     ``` 
 
-    Validación en Cola settled:
+    Validación en Cola de Liquidados (Settled):
     ```bash
     docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic pe.payment.settled.v1 --from-beginning --max-messages 10
     ```
@@ -443,7 +443,7 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
     28de18ea-7124-46a4-acde-d06625c71f0f | FAILED | 1500000.00
     (1 row)
     ```
-*   **Paso D (Validar DLT failed):** En la cola de kafka revisamos si está el fallido.
+*   **Paso D (Validar DLT Fallido):** En la cola de kafka revisamos si está el fallido.
     ```bash
     docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic pe.payment.failed.v1 --from-beginning --max-messages 10
     ```
