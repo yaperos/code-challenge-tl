@@ -1,0 +1,8 @@
+.agents
+challenge-1/node_modules
+challenge-1/dist
+challenge-2/node_modules
+challenge-2/dist
+challenge-3/node_modules
+challenge-3/dist
+challenge-1/.env
