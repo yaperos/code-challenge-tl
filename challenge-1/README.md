@@ -190,6 +190,10 @@ docker-compose up -d
 **Aseguro** tener Node.js (v18+) y estar ubicado en la carpeta del challenge.
 ```bash
 mv .env_sample .env
+
+Colocar esta clave en el .env
+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
+
 npm install
 npm run build
 ```
