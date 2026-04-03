@@ -71,7 +71,7 @@ cd challenge-3
 
 # 2. Instalar dependencias
 npm install
-
+npm run build
 # 3. Levantar Infraestructura
 # (Asegúrate de que Kafka esté corriendo, puedes usar el docker-compose del Challenge 1)
 # docker-compose up -d

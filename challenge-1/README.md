@@ -125,6 +125,7 @@ docker-compose up -d
 **Aseguro** tener Node.js (v18+) y estar ubicado en la carpeta del challenge.
 ```bash
 npm install
+npm run build
 ```
 
 3. **Ejecutar módulos en diferentes terminales**
@@ -183,121 +184,422 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
 
 ## Cómo probar y validar cada escenario paso a paso
 
-### 1. Preparar el Entorno y Levantar Microservicios
-Antes de realizar pruebas, **me aseguro** de tener la infraestructura (Docker) y los 3 microservicios corriendo para observar el flujo en tiempo real.
+### 1. Transactional Outbox (Garantía de Entrega Atómica)
+**Meta:** Validar que `PaymentService` escribe simultáneamente el pago y su evento en una transacción local, y que el broker Kafka **nunca** es invocado dentro de dicha transacción.
 
-**Paso A: Infraestructura (Terminal 1)**
-```bash
-docker-compose up -d
-```
+*   **Paso A (Aislamiento del Relay):** Apaga el servicio de Relay si está corriendo para ver el estado intermedio.
+    
+    Proceso detenido:
+    ```bash
+    [Nest] 15772  - 02/04/2026, 22:21:20   DEBUG [RelayService] Running Outbox Relay...
+    [Nest] 15772  - 02/04/2026, 22:21:25   DEBUG [RelayService] Running Outbox Relay...
+    Franklin@DESKTOP-HJPALP7 MINGW64 ~/Documents/GitHub/code-challenge-tl/challenge-1 (challenge/franklinbarrios)
+    ```
+*   **Paso B (Crear Pago):** Envía un pago nuevo.
+    ```bash
+    curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 500, \"currency\": \"USD\", \"country\": \"PE\"}"
+    ```
 
-**Paso B: Levantar Microservicios (Terminales 2, 3 y 4)**
-**Inicio** los 3 procesos **antes** de enviar la petición para observar el procesamiento asíncrono inmediato:
-- **API:** `npm run start api` (Puerto 3001)
-- **Relay:** `npm run start relay` (Escanea Outbox cada 10s)
-- **Consumers:** `npm run start consumers` (Escucha Kafka)
+    Respuesta del API:
+    ```json
+        {
+        "id":"cbe445b6-e866-4140-aeac-9a210a60cedb",
+        "amount":500,
+        "currency":"USD",
+        "country":"PE",
+        "status":"PENDING",
+        "createdAt":"2026-04-03T08:23:17.022Z",
+        "updatedAt":"2026-04-03T08:23:17.022Z"
+        }
+    ```
+*   **Paso C (Validar DB):** Verifica que el pago está `PENDING` y el outbox tiene el evento listo pero no enviado.
+    ```bash
+    docker exec -it challenge_db psql -U user -d payments_db -c "SELECT status, id FROM payments; SELECT status, \"aggregateId\" FROM outbox_events WHERE status = 'PENDING';"
+    ```
 
----
+    Respuesta:
+    ```
+     status  |                  id
+    ---------+--------------------------------------
+    PENDING | cbe445b6-e866-4140-aeac-9a210a60cedb
+    (1 row)
 
-### 2. Crear un Pago y Verificar Outbox (Garantía Atómica)
-**Envío** un pago a la API. En este punto, la API guarda el Pago y el Evento en una misma transacción de BD.
+    status  |             aggregateId
+    ---------+--------------------------------------
+    PENDING | cbe445b6-e866-4140-aeac-9a210a60cedb
+    (1 row)
+    ``` 
+*   **Paso D (Encender Relay):** Al iniciar `npm run start relay`, observa cómo captura el evento, lo publica y marca como `SENT`.
 
-**Ejecutar Petición:**
-```bash
-curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 1500, \"currency\": \"USD\", \"country\": \"PE\"}"
-```
+    Proceso iniciado:
+    ```bash
+    [Nest] 14540  - 02/04/2026, 22:35:05   DEBUG [RelayService] Running Outbox Relay...
+    [Nest] 14540  - 02/04/2026, 22:35:05     LOG [RelayService] Found 1 pending events to relay
+    [Nest] 14540  - 02/04/2026, 22:35:05     LOG [RelayService] Publishing to namespaced topic: pe.payment.created.v1
+    [Nest] 14540  - 02/04/2026, 22:35:05     LOG [RelayService] Relayed event fdedbf7c-73c8-4f28-adcf-64d5137fce31 successfully
+    [Nest] 14540  - 02/04/2026, 22:35:10   DEBUG [RelayService] Running Outbox Relay...
+    ```
 
-**Validar Inserción en Outbox:**
-Para comprobar que el registro se creó con estado `PENDING` antes de ser procesado por el Relay, **ejecuto**:
-```bash
-docker exec -it challenge_db psql -U user -d payments_db -c "SELECT \"eventId\", \"aggregateId\", status, \"eventType\" FROM outbox_events;"
-```
-*Si el Relay ya lo procesó, verás el estado como `SENT`.*
+    Validacion en base de datos que se cambó a SENT:
+    ```bash
+    docker exec -it challenge_db psql -U user -d payments_db -c "SELECT status, id FROM payments; SELECT status, \"aggregateId\" FROM outbox_events;"
+    ```
 
----
+    Respuesta:
+    ```
+     status  |                  id
+    ---------+--------------------------------------
+     SETTLED | cbe445b6-e866-4140-aeac-9a210a60cedb
+    (1 row)
 
-### 3. Verificar el flujo Relay -> Kafka -> Consumers
-**Observo** los logs en las terminales donde levantaste los servicios en el Paso 1:
-
-1. **Relay Terminal**: Verás `[RelayService] Relayed event <id> successfully` indicando que el registro cambió a `SENT` y se publicó en Kafka.
-2. **Consumers Terminal**: El `DispatcherController` recibirá el mensaje y verás la coordinación de la Saga:
-   - `[FraudConsumer] Fraud scoring passed...`
-   - `[LedgerConsumer] Ledger entry written...`
-   - `[SagaConsumer] Both consumers processed... Settling payment.`
-
----
-
-### 4. Validación de Consistencia Eventual (API y DB)
-
-**Consultar Estado Final vía API:**
-```bash
-curl -X GET http://localhost:3001/payments/{TU-PAYMENT-ID}
-```
-**Resultado esperado:** `"status": "SETTLED"`.
-
-**Verificar Idempotencia en DB:**
-**Compruebo** que los consumidores marcaron el procesamiento. Mis consumidores usan el **ID del pago** como clave de idempotencia:
-
-```bash
-docker exec -it challenge_db psql -U user -d payments_db -c "SELECT pe.\"eventId\" as \"paymentId\", pe.consumer, pe.\"processedAt\" FROM processed_events pe WHERE pe.\"eventId\" = '{TU-PAYMENT-ID}';"
-```
-
-```bash
-docker exec -it challenge_db psql -U user -d payments_db -c "SELECT id, status, amount, country FROM payments;"
-```
-
----
-
-### 5. Escenario Negativo (DLT y Reintentos)
-Para forzar un fallo de fraude y ver el flujo hacia la **Dead Letter Queue (DLT)**, envío un pago con un monto mayor a 1,000,000:
-
-```bash
-curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 1500000, \"currency\": \"USD\", \"country\": \"PE\"}"
-```
-**Resultado en Logs:**
- `[FraudConsumer] Sending to DLT -> payment.created.v1.dlt` y eventualmente el estado del pago cambiará a `FAILED`.
-
-**Validar Estado en DB:**
-
-```bash
-docker exec -it challenge_db psql -U user -d payments_db -c "SELECT id, status, amount FROM payments;"
-```
-
-```bash
-docker exec -it challenge_db psql -U user -d payments_db -c "SELECT id, status, amount FROM payments WHERE id = '{TU-PAYMENT-ID}';"
-```
+     status |             aggregateId
+    --------+--------------------------------------
+     SENT   | cbe445b6-e866-4140-aeac-9a210a60cedb
+    (1 row)
+    ``` 
+*   **Aclaración de Solidez:** El relay es un **proceso independiente** (Worker), no un `setInterval` en la API. Si el relay falla entre la publicación y la actualización del estado en DB, el sistema simplemente reintentará el envío (garantía *at-least-once*), la cual es mitigada por la idempotencia del consumidor.
 
 ---
 
-### Monitoreo de Kafka (Inspección de Tópicos)
+### 2. Consumidores Idempotentes
+**Meta:** Validar que los módulos `FraudConsumer` y `LedgerConsumer` no producen efectos secundarios ante mensajes duplicados.
 
-Como ahora usamos nombres de tópico por país, **ejecuto** estos comandos para validar que los mensajes fluyen correctamente por los canales regionales:
+*   **Paso A (Verificar registro inicial):** Tras procesar un pago, consulta la tabla de eventos procesados.
+    ```bash
+    docker exec -it challenge_db psql -U user -d payments_db -c "SELECT \"eventId\", consumer FROM processed_events;"
+    ```
 
-**1. Listar tópicos existentes:**
-```bash
-docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
-```
+    Respuesta:
+    ```
+                   eventId                |    consumer    
+    --------------------------------------+----------------
+     cbe445b6-e866-4140-aeac-9a210a60cedb | FraudConsumer
+     cbe445b6-e866-4140-aeac-9a210a60cedb | LedgerConsumer
+    (2 rows)
+    ``` 
+*   **Paso B (Simular Duplicado):** Puedes forzar el re-procesamiento (por configuración de Kafka o re-enviando el mismo `eventId` manualmente al tópico). 
 
-**2. Listar solo tópicos de Perú (PE):**
-```bash
-docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list | grep pe.
-```
+    **Comando manual (vía Kafka CLI):**
+    ```bash
+    # Sustituye cbe445b6-e866-4140-aeac-9a210a60cedb por el ID obtenido en el Paso A
+    echo 'cbe445b6-e866-4140-aeac-9a210a60cedb:{"id":"cbe445b6-e866-4140-aeac-9a210a60cedb", "amount":500, "currency":"USD", "country":"PE"}' | docker exec -i kafka kafka-console-producer --bootstrap-server localhost:9092 --topic pe.payment.created.v1 --property "parse.key=true" --property "key.separator=:"
+    ```
+*   **Resultado esperado:** En los logs de `apps/consumers`, verás: `[FraudConsumer] Event <ID> already processed. ...`. No habrá nuevos registros en `processed_events` ni actualizaciones duplicadas en la Saga.
 
-**3. Ver contenido de un tópico (ej. Perú):**
-```bash
-docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic pe.payment.created.v1 --from-beginning
-```
+    Respuesta Consumers:
+    ```
+    [Nest] 13264  - 02/04/2026, 22:49:28     LOG [DispatcherController] Payment created event received by Dispatcher
+    [Nest] 13264  - 02/04/2026, 22:49:28     LOG [FraudConsumer] Event cbe445b6-e866-4140-aeac-9a210a60cedb already processed by FraudConsumer
+    [Nest] 13264  - 02/04/2026, 22:49:28     LOG [LedgerConsumer] Event cbe445b6-e866-4140-aeac-9a210a60cedb already processed by LedgerConsum er
+    ``` 
 
-**4. Ver la "Cola de Errores" (DLT) de México:**
-```bash
-docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic mx.payment.created.v1.dlt --from-beginning
-```
+    **Validar en DB (No hay duplicados):**
+    ```bash
+    docker exec -it challenge_db psql -U user -d payments_db -c "SELECT \"eventId\", consumer FROM processed_events WHERE \"eventId\" = 'cbe445b6-e866-4140-aeac-9a210a60cedb';"
+    ```
+
+    Respuesta:
+    ```
+    eventId                              |    consumer    
+    --------------------------------------+----------------
+    cbe445b6-e866-4140-aeac-9a210a60cedb | FraudConsumer
+    cbe445b6-e866-4140-aeac-9a210a60cedb | LedgerConsumer
+    (2 rows)
+    ```
+*   **Aclaración de Solidez:** Las claves de idempotencia residen en el **lado del consumidor** (clave compuesta: `eventId` + `consumer_name`), asegurando que cada lógica de negocio sea "self-contained" y resiliente.
 
 ---
 
-## Cumplimiento de Entregables (Checklist)
+### 3. Manejador de DLT (Dead Letter Topic)
+**Meta:** Validar que un fallo crítico (ej. fraude rechazado por monto) deriva en una compensación y no se pierde silenciosamente.
 
-He diseñado la solución alineada con el 100% de los requerimientos técnicos:
+*   **Paso A (Disparar Fallo):** Envía un pago con monto superior a 1,000,000.
+    ```bash
+    curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 1500000, \"currency\": \"USD\", \"country\": \"PE\"}"
+    ```
+
+    Respuesta:
+    ```json
+        {   
+        "id":"28de18ea-7124-46a4-acde-d06625c71f0f",
+        "amount":1500000,
+        "currency":"USD",
+        "country":"PE",
+        "status":"PENDING",
+        "createdAt":"2026-04-03T09:00:20.455Z",
+        "updatedAt":"2026-04-03T09:00:20.455Z"
+        }
+    ```
+*   **Paso B (Observar logs):** Verás que el `FraudConsumer` agota sus reintentos locales y emite un evento al DLT.
+
+    Respuesta:
+    ```
+    [Nest] 13264  - 02/04/2026, 23:00:25     LOG [DispatcherController] Payment created event received by Dispatcher
+    [Nest] 13264  - 02/04/2026, 23:00:25     LOG [FraudConsumer] Processing fraud scoring for payment 28de18ea-7124-46a4-acde-d06625c71f0f
+    [Nest] 13264  - 02/04/2026, 23:00:25   ERROR [FraudConsumer] Error processing 28de18ea-7124-46a4-acde-d06625c71f0f in Fraud: Fraud check failed: amount too high.
+    [Nest] 13264  - 02/04/2026, 23:00:25    WARN [FraudConsumer] Sending to DLT -> pe.payment.created.v1.dlt
+    [Nest] 13264  - 02/04/2026, 23:00:25     LOG [LedgerConsumer] Processing ledger entry (double-entry write) for payment 28de18ea-7124-46a4-acde-d06625c71f0f
+    [Nest] 13264  - 02/04/2026, 23:00:25     LOG [LedgerConsumer] Ledger entry written for payment 28de18ea-7124-46a4-acde-d06625c71f0f
+    [Nest] 13264  - 02/04/2026, 23:00:25     LOG [DispatcherController] Fraud and Ledger evaluations initiated
+    [Nest] 13264  - 02/04/2026, 23:00:25    WARN [SagaConsumer] Saga reacting to failure for payment 28de18ea-7124-46a4-acde-d06625c71f0f
+    ```
+*   **Paso C (Validar Compensación):** El `SagaConsumer` detecta la señal de fallo y actualiza el pago a `FAILED`.
+    ```bash
+    docker exec -it challenge_db psql -U user -d payments_db -c "SELECT id, status, amount FROM payments WHERE amount > 1000000;"
+    ```
+
+    Respuesta:
+    ```
+                     id                  | status |   amount   
+    --------------------------------------+--------+------------
+    28de18ea-7124-46a4-acde-d06625c71f0f | FAILED | 1500000.00
+    (1 row)
+    ```
+
+---
+
+### 4. Endpoint de Consulta de Estado
+**Meta:** Validar que el API refleja honestamente la consistencia eventual.
+
+*   **Paso A (Aislamiento):** Detén el servicio de Relay (`apps/relay`) antes de realizar la prueba.
+*   **Paso B (Consulta Inicial - Consistencia Eventual):** Crea un pago y realiza un `GET` inmediatamente.
+    ```bash
+    curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 150, \"currency\": \"USD\", \"country\": \"PE\"}"    
+    ```
+
+    Respuesta pago:
+    ```json
+        {
+        "id":"ef407a6d-ffb5-42ce-a739-2f2d44230e79",
+        "amount":150,
+        "currency":"USD",
+        "country":"PE",
+        "status":"PENDING",
+        "createdAt":"2026-04-03T09:12:45.975Z",
+        "updatedAt":"2026-04-03T09:12:45.975Z"
+        }
+    ```
+
+    Llamando a la consulta del pago:
+    ```bash
+    curl -X GET http://localhost:3001/payments/ef407a6d-ffb5-42ce-a739-2f2d44230e79
+    ```
+    **Respuesta (Estado Pendiente):**
+    ```json
+        {
+        "data":{
+            "paymentId":"ef407a6d-ffb5-42ce-a739-2f2d44230e79",
+            "status":"PENDING",
+            "amount":"150.00",
+            "currency":"USD"
+        },
+        "meta":{
+            "consistencyModel":"eventual",
+            "note":"Status may be pending while downstream consumers are processing."
+        }
+        }
+    ```
+*   **Paso C (Activación y Procesamiento):** Inicia el Relay `npm run start relay`. Observa en los logs cómo el evento viaja de Outbox -> Kafka -> Consumers -> Saga.
+
+    Salida Outbox a Kafka:
+    ```
+    Outbox Relay Worker started
+    [Nest] 18000  - 02/04/2026, 23:15:55   DEBUG [RelayService] Running Outbox Relay...
+    [Nest] 18000  - 02/04/2026, 23:15:55     LOG [RelayService] Found 1 pending events to relay
+    [Nest] 18000  - 02/04/2026, 23:15:55     LOG [RelayService] Publishing to namespaced topic: pe.payment.created.v1
+    [Nest] 18000  - 02/04/2026, 23:15:55     LOG [RelayService] Relayed event fa528efc-a61e-4de7-b253-385fd1ed5b1f successfully
+    [Nest] 18000  - 02/04/2026, 23:16:00   DEBUG [RelayService] Running Outbox Relay...
+    ```
+
+    Salida Consumer Kafka a Saga:
+    ```
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [DispatcherController] Payment created event received by Dispatcher
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [FraudConsumer] Processing fraud scoring for payment ef407a6d-ffb5-42ce-a739-2f2d44230e79
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [LedgerConsumer] Processing ledger entry (double-entry write) for payment ef407a6d-ffb5-42ce-a739-2f2d44230e79
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [FraudConsumer] Fraud scoring passed for payment ef407a6d-ffb5-42ce-a739-2f2d44230e79
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [LedgerConsumer] Ledger entry written for payment ef407a6d-ffb5-42ce-a739-2f2d44230e79
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [DispatcherController] Fraud and Ledger evaluations initiated
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [SagaConsumer] Both consumers processed for ef407a6d-ffb5-42ce-a739-2f2d44230e79. Settling payment.
+    [Nest] 13264  - 02/04/2026, 23:15:55     LOG [SagaConsumer] Both consumers processed for ef407a6d-ffb5-42ce-a739-2f2d44230e79. Settling payment.
+    ```
+*   **Paso D (Consulta Final - Consistencia Alcanzada):** Consulta el estado una vez que la Saga haya terminado.
+    ```bash
+    curl -X GET http://localhost:3001/payments/ef407a6d-ffb5-42ce-a739-2f2d44230e79
+    ```
+    **Respuesta (Estado Final):**
+    ```json
+        {
+        "data":{
+            "paymentId":"ef407a6d-ffb5-42ce-a739-2f2d44230e79",
+            "status":"SETTLED",
+            "amount":"150.00",
+            "currency":"USD"
+        },
+        "meta":{
+            "consistencyModel":"eventual",
+            "note":"Status may be pending while downstream consumers are processing."
+        }
+        }
+    ```
+
+---
+
+### Ampliación Opcional implementada: Namespacing por País
+He implementado un sistema de tópicos particionados lógicamente por país:
+`{pais}.payments.payment.created.v1` (ej: `pe.payments...`, `mx.payments...`).
+
+**Implicaciones en la Estrategia de Grupos:**
+- **Aislamiento de Carga:** Permite configurar Consumer Groups específicos por región (`entidad-fraud-group-pe`). Si el volumen en México es 10x mayor que en Perú, escalamos solo los consumidores de `mx.*`.
+- **Aislamiento de Fallos:** Un error de configuración en los consumidores de Perú no detiene el pipeline de México.
+- **Data Residency:** Facilita el cumplimiento de normativas donde los datos de un país no deben ser procesados por infraestructura de otra jurisdicción.
+
+#### Ejemplo y Validación de Namespacing
+
+**1. Listar tópicos regionales:**
+```bash
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list | grep '.payment.'
+```
+
+Resultado:
+```
+co.payment.ledger.written.v1
+gen.payment.created.v1
+gen.payment.failed.v1
+gen.payment.fraud.approved.v1
+gen.payment.ledger.written.v1
+mx.payment.created.v1
+mx.payment.failed.v1
+mx.payment.fraud.approved.v1
+mx.payment.ledger.written.v1
+pe.payment.created.v1
+pe.payment.created.v1.dlt
+pe.payment.failed.v1
+pe.payment.fraud.approved.v1
+pe.payment.ledger.written.v1
+```
+
+**2. Prueba de flujo segregado (PE vs MX):**
+*   **Petición para Perú (PE):**
+    ```bash
+    curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 100, \"currency\": \"PEN\", \"country\": \"PE\"}"
+    ```
+
+    Resultado:
+    ```json
+        {
+        "id":"83210874-2c5c-4432-ba0d-bc256fc6a6dd",
+        "amount":100,
+        "currency":"PEN",
+        "country":"PE",
+        "status":"PENDING",
+        "createdAt":"2026-04-03T09:22:08.322Z",
+        "updatedAt":"2026-04-03T09:22:08.322Z"
+        }
+    ```
+
+    Validación del estado luego de procesar el pago:
+
+    ```bash
+    curl -X GET http://localhost:3001/payments/83210874-2c5c-4432-ba0d-bc256fc6a6dd
+    ```
+
+    Resultado:
+    ```json
+        {
+        "data":{
+            "paymentId":"83210874-2c5c-4432-ba0d-bc256fc6a6dd",
+            "status":"SETTLED",
+            "amount":"100.00",
+            "currency":"PEN"
+        },
+        "meta":{
+            "consistencyModel":"eventual",
+            "note":"Status may be pending while downstream consumers are processing."
+        }
+        }
+    ```
+
+*   **Petición para México (MX):**
+    ```bash
+    curl -X POST http://localhost:3001/payments -H "Content-Type: application/json" -d "{\"amount\": 200, \"currency\": \"MXN\", \"country\": \"MX\"}"
+    ```
+
+    Resultado:
+    ```json
+        {
+        "id":"b28c7f5b-3639-419c-940b-c2201a1f9f61",
+        "amount":200,
+        "currency":"MXN",
+        "country":"MX",
+        "status":"PENDING",
+        "createdAt":"2026-04-03T09:22:22.138Z",
+        "updatedAt":"2026-04-03T09:22:22.138Z"
+        }
+    ```
+
+    Validación del estado luego de procesar el pago:
+
+    ```bash
+    curl -X GET http://localhost:3001/payments/b28c7f5b-3639-419c-940b-c2201a1f9f61
+    ```
+
+    Resultado:
+    ```json
+        {
+        "data":{
+            "paymentId":"b28c7f5b-3639-419c-940b-c2201a1f9f61",
+            "status":"SETTLED",
+            "amount":"200.00",
+            "currency":"MXN"
+        },
+        "meta":{
+            "consistencyModel":"eventual",
+            "note":"Status may be pending while downstream consumers are processing."
+        }
+        }
+    ```
+
+**3. Inspeccionar el contenido de cada tópico:**
+*   **Consumidor PE:**
+    ```bash
+    docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic pe.payment.created.v1 --from-beginning --max-messages 10
+    ```
+
+    Resultado (es el último item):
+    ```json
+    {"id":"cbe445b6-e866-4140-aeac-9a210a60cedb","amount":500,"country":"PE","currency":"USD"}
+    {"id":"cbe445b6-e866-4140-aeac-9a210a60cedb", "amount":500, "currency":"USD", "country":"PE"}
+    {"id":"17d3468f-97b9-46d9-b6f4-d6d507d198f2","amount":1500000,"country":"PE","currency":"USD"}
+    {"id":"28de18ea-7124-46a4-acde-d06625c71f0f","amount":1500000,"country":"PE","currency":"USD"}
+    {"id":"539e48d8-09ba-4d7d-bc01-b27399c6ab05","amount":150,"country":"PE","currency":"USD"}
+    {"id":"ef407a6d-ffb5-42ce-a739-2f2d44230e79","amount":150,"country":"PE","currency":"USD"}
+    {"id":"83210874-2c5c-4432-ba0d-bc256fc6a6dd","amount":100,"country":"PE","currency":"PEN"}
+    ```
+*   **Consumidor MX:**
+    ```bash
+    docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic mx.payment.created.v1 --from-beginning --max-messages 10
+    ```
+
+    Resultado:
+    ```json
+    {"id":"b28c7f5b-3639-419c-940b-c2201a1f9f61","amount":200,"country":"MX","currency":"MXN"}
+    ```
+
+Esto valida que el **Outbox Relay** enruta dinámicamente los mensajes basándose en el prefijo geográfico, permitiendo estrategias de consumo independientes por país.
+
+---
+
+## Estrategia de Solución
+
+- [x] **Relay Externo:** Proceso `apps/relay` desacoplado del lifecycle de la API.
+- [x] **Atomicidad DB:** Garantizada mediante el patrón Outbox en una transacción PostgreSQL única.
+- [x] **Idempotencia Consumidor:** Clave por `eventId` en la base de datos del consumidor.
+- [x] **Transparencia de Consistencia:** El endpoint de estado informa explícitamente sus garantías al cliente.
+- [x] **Resiliencia Geográfica:** Namespacing implementado para aislamiento regional y escalado granular.
+
+## Cumplimiento de Entregables
+
+He diseñado la solución alineada con los requerimientos técnicos:
 
 | Punto | Entregable Requerido | Estado | Ubicación / Implementación |
 | :--- | :--- | :---: | :--- |
