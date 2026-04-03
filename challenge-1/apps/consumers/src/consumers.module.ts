@@ -5,6 +5,7 @@ import { DispatcherController } from './dispatcher.controller';
 import { FraudConsumer } from './fraud.consumer';
 import { LedgerConsumer } from './ledger.consumer';
 import { SagaConsumer } from './saga.consumer';
+import { NotifyConsumer } from './notify.consumer';
 import { ProcessedEventsRepository } from './processed-events.repository';
 
 @Module({
@@ -29,6 +30,7 @@ import { ProcessedEventsRepository } from './processed-events.repository';
   controllers: [
     DispatcherController,
     SagaConsumer,
+    NotifyConsumer,
   ],
   providers: [
     FraudConsumer, 

@@ -1,5 +1,5 @@
-import { Controller, Logger } from '@nestjs/common';
-import { EventPattern, Payload } from '@nestjs/microservices';
+import { Controller, Logger, Inject } from '@nestjs/common';
+import { EventPattern, Payload, ClientKafka } from '@nestjs/microservices';
 import { DataSource } from 'typeorm';
 import { ProcessedEventsRepository } from './processed-events.repository';
 import { Payment, PaymentStatus } from '@app/shared';
@@ -11,6 +11,7 @@ export class SagaConsumer {
   constructor(
     private readonly dataSource: DataSource,
     private readonly processedRepo: ProcessedEventsRepository,
+    @Inject('KAFKA_CLIENT') private readonly kafkaClient: ClientKafka,
   ) {}
 
   @EventPattern([
@@ -43,8 +44,14 @@ export class SagaConsumer {
   ])
   async handlePaymentFailed(@Payload() message: any): Promise<void> {
     const aggregateId = message.aggregateId || message.id;
-    this.logger.warn(`Saga reacting to failure for payment ${aggregateId}`);
-    await this.dataSource.manager.update(Payment, { id: aggregateId }, { status: PaymentStatus.FAILED });
+    this.logger.warn(`Saga picking up failure for payment ${aggregateId}`);
+    
+    // Atomically update DB to FAILED. If already updated, it won't trigger again.
+    await this.dataSource.manager.update(
+      Payment, 
+      { id: aggregateId, status: PaymentStatus.PENDING }, 
+      { status: PaymentStatus.FAILED }
+    );
   }
 
   private async trySettlePayment(eventId: string, aggregateId: string): Promise<void> {
@@ -55,12 +62,36 @@ export class SagaConsumer {
     const ledgerProcessed = await this.processedRepo.exists(eventId, 'LedgerConsumer');
 
     if (fraudProcessed && ledgerProcessed) {
-      this.logger.log(`Both consumers processed for ${aggregateId}. Settling payment.`);
-      
-      // Update Payment status to SETTLED
-      await this.dataSource.manager.update(Payment, { id: aggregateId }, { status: PaymentStatus.SETTLED });
-      
-      // Optionally emit payment.settled.v1 here
+      // Use a conditional update to ensure only one process settles the payment
+      const result = await this.dataSource.manager.update(
+        Payment, 
+        { id: aggregateId, status: PaymentStatus.PENDING }, 
+        { status: PaymentStatus.SETTLED }
+      );
+
+      // Only proceed if we actually updated the status (first one to arrive)
+      if (result.affected && result.affected > 0) {
+        this.logger.log(`Both consumers processed for ${aggregateId}. Settling payment.`);
+        
+        const payment = await this.dataSource.manager.findOne(Payment, { where: { id: aggregateId } });
+        if (payment) {
+          const countryPrefix = (payment.country || 'gen').toLowerCase();
+          this.logger.log(`Emitting success event for ${aggregateId} to ${countryPrefix}.payment.settled.v1`);
+          
+          this.kafkaClient.emit(`${countryPrefix}.payment.settled.v1`, {
+            key: aggregateId,
+            value: { 
+              aggregateId, 
+              eventId, 
+              status: 'SETTLED',
+              amount: payment.amount,
+              currency: payment.currency
+            }
+          });
+        }
+      } else {
+        this.logger.debug(`Payment ${aggregateId} already settled or not in PENDING state.`);
+      }
     }
   }
 }

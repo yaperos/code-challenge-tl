@@ -70,6 +70,7 @@ export class LedgerConsumer {
       },
     });
 
+    this.logger.warn(`Emitting failure event to ${countryPrefix}.payment.failed.v1`);
     this.kafkaClient.emit(`${countryPrefix}.payment.failed.v1`, {
       key: aggregateId,
       value: { aggregateId, reason: error.message },

@@ -16,6 +16,7 @@ sequenceDiagram
     participant R as Outbox Relay (Worker)
     participant K as Kafka Broker (Topic)
     participant D as Dispatcher / Consumers
+    participant N as NotifyConsumer (Brevo)
     participant S as Saga Consumer
 
     Note over C,API: 1. Creación Atómica
@@ -27,7 +28,7 @@ sequenceDiagram
     API-->>C: 201 Created (paymentId)
 
     Note over R,DB: 2. Publicación Asíncrona (Relay)
-    loop Cada 10 segundos (@Cron)
+    loop Cada 5 segundos (@Cron)
         R->>DB: SELECT PENDING events
         R->>K: Publish {pais}.payment.created.v1
         R->>DB: UPDATE OutboxEvent (SENT)
@@ -36,11 +37,14 @@ sequenceDiagram
     Note over K,D: 3. Procesamiento Paralelo e Idempotencia
     K->>D: Consume {pais}.payment.created.v1
     par Fraud Check
-        D->>DB: Check & Save Idempotency (processed_events)
+        D->>DB: Check & Save Idempotency
         D->>K: Emit {pais}.payment.fraud.approved.v1
     and Ledger Write
-        D->>DB: Check & Save Idempotency (processed_events)
+        D->>DB: Check & Save Idempotency
         D->>K: Emit {pais}.payment.ledger.written.v1
+    and Notify (Brevo)
+        D->>N: Consume {pais}.payment.created.v1
+        N-->>C: Email (Confirmación de Recepción)
     end
 
     Note over K,S: 4. Consistencia Final (Saga)
@@ -48,7 +52,10 @@ sequenceDiagram
     S->>DB: Verify processed_events (fraud & ledger)
     alt Ambas condiciones cumplidas
         S->>DB: UPDATE Payment (SETTLED)
-        Note right of S: El pago ahora es SETTLED
+        S->>K: Emit {pais}.payment.settled.v1
+    else Fallo en validación
+        S->>DB: UPDATE Payment (FAILED)
+        S->>K: Emit {pais}.payment.failed.v1
     end
 ```
 
@@ -65,15 +72,16 @@ sequenceDiagram
 3.  **Dispatcher (Consumers Entry Point):**
     *   Centraliza la recepción del evento `payment.created.v1` y dispara en paralelo las evaluaciones de **Fraude** y **Libro Contable (Ledger)**.
 
-4.  **Consumidores Especializados (Fraud & Ledger):**
+4.  **Consumidores Especializados (Fraud, Ledger & Notify):**
     *   **Fraud Check:** Realiza el scoring de riesgo. Si es exitoso, emite `payment.fraud.approved.v1`.
     *   **Ledger Write:** Registra el movimiento financiero (débito/crédito) y emite `payment.ledger.written.v1`.
-    *   **Idempotencia:** Ambos usan la tabla `processed_events` para asegurar que un mismo `eventId` nunca sea procesado dos veces por el mismo consumidor.
+    *   **Notify (Brevo):** Escucha el evento inicial de creación (`payment.created.v1`) y envía una confirmación de recepción inmediata al usuario (`barfrank2020@gmail.com`) utilizando plantillas HTML personalizadas.
+    *   **Idempotencia:** Todos usan la tabla `processed_events` para asegurar que un mismo `eventId` nunca sea procesado dos veces.
 
 5.  **Saga Consumer (Orquestador de Consistencia Final):**
     *   Recoge los eventos de aprobación de Fraude y Ledger.
-    *   **Función:** Verifica en la BD (`processed_events`) si ambos procesos han terminado para ese pago.
-    *   **Cierre:** Solo cuando ambas condiciones se cumplen, la Saga actualiza el registro original en la tabla `payments` a estado **`SETTLED`**, alcanzando la **consistencia eventual**.
+    *   **Cierre Exitoso:** Cuando ambas condiciones se cumplen, actualiza el pago a **`SETTLED`** y emite el evento final de negocio **`payment.settled.v1`**.
+    *   **Cierre Fallido:** Si recibe un evento de fallo (ej. de DLT), actualiza el pago a **`FAILED`** y emite **`payment.failed.v1`**.
 
 ---
 
@@ -586,6 +594,22 @@ pe.payment.ledger.written.v1
     ```
 
 Esto valida que el **Outbox Relay** enruta dinámicamente los mensajes basándose en el prefijo geográfico, permitiendo estrategias de consumo independientes por país.
+
+### Notificación de pagos por correo
+
+El sistema incluye un servicio de notificaciones reactivo que informa al usuario final sobre el estado de su transacción mediante correos electrónicos diseñados.
+
+*   **Servicio de Envío:** Integración con la API de **Brevo** (SMTP Relay).
+*   **Configuración (POC):** El servicio y las credenciales se encuentran configurados en `apps/consumers/src/notify.consumer.ts`.
+*   **Destinatario:** Por ser una Prueba de Concepto (POC), el correo se envía a `barfrank2020@gmail.com`.
+
+#### Escenario de Notificación:
+
+1.  **Pago Recibido (Created):**
+    *   **Asunto:** `Hemos recibido tu pago: {id}`
+    *   **Plantilla:** `templates/ok.html` (Rediseñada como "En Proceso")
+    *   ![Pago OK](./assets/pago-ok.png)
+
 
 ---
 
