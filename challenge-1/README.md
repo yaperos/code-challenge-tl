@@ -179,7 +179,7 @@ Como parte de la evolución de la plataforma, **he implementado** una serie de c
 6.  **Optimización de Respuesta (Cache):** **He integrado** una capa de caché en memoria para el endpoint de consulta de pagos. Esto **convierte** consultas que podrían ser costosas en respuestas instantáneas de pocos milisegundos para peticiones repetitivas.
 ---
 
-## Cómo compilar y ejecutar
+## Cómo compilar y ejecutar: `chmod +x main.sh;./main.sh` Inicia todo el proceso creando contenedores a las apis, Kafka y bases de datos, que internamente ejecutan:
 
 1. **Levantar Infraestructura Base** (Kafka, Zookeeper, PostgreSQL)  
 ```bash
