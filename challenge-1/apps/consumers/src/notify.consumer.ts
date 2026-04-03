@@ -1,5 +1,6 @@
-import { Controller, Logger, Inject } from '@nestjs/common';
+import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
+import { ConfigService } from '@nestjs/config';
 import { ProcessedEventsRepository } from './processed-events.repository';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -7,14 +8,24 @@ import * as path from 'path';
 @Controller()
 export class NotifyConsumer {
   private readonly logger = new Logger(NotifyConsumer.name);
-  private readonly brevoApiKey = process.env.BREVO_API_KEY;
-  private readonly targetEmail = process.env.NOTIFY_TARGET_EMAIL || 'franklin.barrios@icloud.com';
-  private readonly senderEmail = process.env.SENDER_EMAIL || 'bestfrank2020@gmail.com';
   private readonly consumerName = 'NotifyConsumer';
 
   constructor(
     private readonly processedRepo: ProcessedEventsRepository,
+    private readonly configService: ConfigService,
   ) {}
+
+  private get brevoApiKey(): string | undefined {
+    return this.configService.get<string>('BREVO_API_KEY');
+  }
+
+  private get targetEmail(): string {
+    return this.configService.get<string>('NOTIFY_TARGET_EMAIL') || 'franklin.barrios@icloud.com';
+  }
+
+  private get senderEmail(): string {
+    return this.configService.get<string>('SENDER_EMAIL') || 'bestfrank2020@gmail.com';
+  }
 
   private getTemplate(templateName: string, data: any): string {
     const templatePath = path.join(process.cwd(), 'templates', `${templateName}.html`);

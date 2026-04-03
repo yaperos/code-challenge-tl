@@ -323,6 +323,21 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
      SENT   | cbe445b6-e866-4140-aeac-9a210a60cedb
     (1 row)
     ``` 
+
+    Validación en Cola settled:
+    ```bash
+    docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic pe.payment.settled.v1 --from-beginning --max-messages 10
+    ```
+    Respuesta:
+    ```json
+    {
+        "aggregateId":"cbe445b6-e866-4140-aeac-9a210a60cedb",
+        "eventId":"cbe445b6-e866-4140-aeac-9a210a60cedb",
+        "status":"SETTLED",
+        "amount":"500.00",
+        "currency":"USD"
+    }
+    ```
 *   **Aclaración de Solidez:** El relay es un **proceso independiente** (Worker), no un `setInterval` en la API. Si el relay falla entre la publicación y la actualización del estado en DB, el sistema simplemente reintentará el envío (garantía *at-least-once*), la cual es mitigada por la idempotencia del consumidor.
 
 ---
@@ -427,6 +442,18 @@ Al implementar prefijos geográficos (`pe.`, `mx.`, `co.`) en Kafka, mi arquitec
     --------------------------------------+--------+------------
     28de18ea-7124-46a4-acde-d06625c71f0f | FAILED | 1500000.00
     (1 row)
+    ```
+*   **Paso D (Validar DLT failed):** En la cola de kafka revisamos si está el fallido.
+    ```bash
+    docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic pe.payment.failed.v1 --from-beginning --max-messages 10
+    ```
+    Respuesta:
+    ```json
+    {
+        "aggregateId":"28de18ea-7124-46a4-acde-d06625c71f0f",
+        "eventId":"28de18ea-7124-46a4-acde-d06625c71f0f",
+        "reason":"Fraud check failed: amount too high."
+    }
     ```
 
 ---
